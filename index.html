@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#1B3A34" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Finanzas" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<title>Mis Finanzas</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #EFF3F0; font-family: sans-serif; }
+  #root { min-height: 100vh; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState } = React;
+
+
+const MESES = [
+  "Enero","Febrero","Marzo","Abril","Mayo","Junio",
+  "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"
+];
+
+function monthKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+function monthLabel(date) {
+  return `${MESES[date.getMonth()]} ${date.getFullYear()}`;
+}
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function fmtGs(n) {
+  const v = Number(n) || 0;
+  return "₲ " + v.toLocaleString("es-PY", { maximumFractionDigits: 0 });
+}
+function newId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function FinanzasTracker() {
+  const [config, setConfig] = useState({ fixedExpenses: [], fixedIncome: [] });
+  const [dailyEntries, setDailyEntries] = useState([]);
+  const [monthlyStatus, setMonthlyStatus] = useState({});
+  const [loans, setLoans] = useState([]);
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [tab, setTab] = useState("resumen");
+  const [dirty, setDirty] = useState(false);
+  const [showWelcome, setShowWelcome] = useState(true);
+  const [welcomeMsg, setWelcomeMsg] = useState("");
+
+  function loadFromData(data) {
+    if (data.config) setConfig(data.config);
+    if (data.dailyEntries) setDailyEntries(data.dailyEntries);
+    if (data.monthlyStatus) setMonthlyStatus(data.monthlyStatus);
+    if (data.loans) setLoans(data.loans);
+    setDirty(false);
+  }
+
+  function handleWelcomeFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        loadFromData(data);
+        setShowWelcome(false);
+      } catch (err) {
+        setWelcomeMsg("No se pudo leer ese archivo. Fijate que sea el .json que descargaste antes.");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
+  const mKey = monthKey(selectedDate);
+  const status = monthlyStatus[mKey] || { expensesPaid: [], incomePaid: [] };
+
+  function toggleExpensePaid(id) {
+    const cur = monthlyStatus[mKey] || { expensesPaid: [], incomePaid: [] };
+    const set = new Set(cur.expensesPaid);
+    set.has(id) ? set.delete(id) : set.add(id);
+    setMonthlyStatus({ ...monthlyStatus, [mKey]: { ...cur, expensesPaid: [...set] } });
+    setDirty(true);
+  }
+  function toggleIncomeReceived(id) {
+    const cur = monthlyStatus[mKey] || { expensesPaid: [], incomePaid: [] };
+    const set = new Set(cur.incomePaid);
+    set.has(id) ? set.delete(id) : set.add(id);
+    setMonthlyStatus({ ...monthlyStatus, [mKey]: { ...cur, incomePaid: [...set] } });
+    setDirty(true);
+  }
+
+  function addFixedExpense(item) {
+    setConfig({ ...config, fixedExpenses: [...config.fixedExpenses, { id: newId(), ...item }] });
+    setDirty(true);
+  }
+  function addFixedIncome(item) {
+    setConfig({ ...config, fixedIncome: [...config.fixedIncome, { id: newId(), ...item }] });
+    setDirty(true);
+  }
+  function deleteFixedExpense(id) {
+    setConfig({ ...config, fixedExpenses: config.fixedExpenses.filter((i) => i.id !== id) });
+    setDirty(true);
+  }
+  function deleteFixedIncome(id) {
+    setConfig({ ...config, fixedIncome: config.fixedIncome.filter((i) => i.id !== id) });
+    setDirty(true);
+  }
+  function addDailyEntry(entry) {
+    setDailyEntries([...dailyEntries, { id: newId(), ...entry }]);
+    setDirty(true);
+  }
+  function deleteDailyEntry(id) {
+    setDailyEntries(dailyEntries.filter((e) => e.id !== id));
+    setDirty(true);
+  }
+
+  function addLoan(item) {
+    setLoans([...loans, { id: newId(), name: item.name, method: item.method, installments: {} }]);
+    setDirty(true);
+  }
+  function deleteLoan(loanId) {
+    setLoans(loans.filter((l) => l.id !== loanId));
+    setDirty(true);
+  }
+  function addInstallments(loanId, entries) {
+    setLoans(
+      loans.map((l) => {
+        if (l.id !== loanId) return l;
+        const updated = { ...l.installments };
+        entries.forEach(({ month, amount }) => {
+          updated[month] = { amount, paid: updated[month]?.paid || false };
+        });
+        return { ...l, installments: updated };
+      })
+    );
+    setDirty(true);
+  }
+  function deleteInstallment(loanId, month) {
+    setLoans(
+      loans.map((l) => {
+        if (l.id !== loanId) return l;
+        const updated = { ...l.installments };
+        delete updated[month];
+        return { ...l, installments: updated };
+      })
+    );
+    setDirty(true);
+  }
+  function toggleInstallmentPaid(loanId, month) {
+    setLoans(
+      loans.map((l) => {
+        if (l.id !== loanId) return l;
+        const cur = l.installments[month];
+        if (!cur) return l;
+        return { ...l, installments: { ...l.installments, [month]: { ...cur, paid: !cur.paid } } };
+      })
+    );
+    setDirty(true);
+  }
+
+  const monthDaily = dailyEntries.filter((e) => e.date.slice(0, 7) === mKey);
+  const dailyExpenses = monthDaily.filter((e) => e.type === "expense");
+  const dailyIncome = monthDaily.filter((e) => e.type === "income");
+
+  const loanRowsThisMonth = loans
+    .map((l) => ({ loanId: l.id, name: l.name, method: l.method, inst: l.installments[mKey] }))
+    .filter((r) => r.inst);
+  const loanExpTotal = loanRowsThisMonth.reduce((s, r) => s + Number(r.inst.amount), 0);
+  const loanExpPaidTotal = loanRowsThisMonth.filter((r) => r.inst.paid).reduce((s, r) => s + Number(r.inst.amount), 0);
+
+  const fixedExpTotal = config.fixedExpenses.reduce((s, i) => s + Number(i.amount), 0) + loanExpTotal;
+  const fixedExpPaidTotal =
+    config.fixedExpenses.filter((i) => status.expensesPaid.includes(i.id)).reduce((s, i) => s + Number(i.amount), 0) +
+    loanExpPaidTotal;
+  const fixedIncTotal = config.fixedIncome.reduce((s, i) => s + Number(i.amount), 0);
+  const fixedIncRecTotal = config.fixedIncome
+    .filter((i) => status.incomePaid.includes(i.id))
+    .reduce((s, i) => s + Number(i.amount), 0);
+  const dailyExpTotal = dailyExpenses.reduce((s, i) => s + Number(i.amount), 0);
+  const dailyIncTotal = dailyIncome.reduce((s, i) => s + Number(i.amount), 0);
+
+  const balanceActual = fixedIncRecTotal + dailyIncTotal - (fixedExpPaidTotal + dailyExpTotal);
+  const balanceProyectado = fixedIncTotal + dailyIncTotal - (fixedExpTotal + dailyExpTotal);
+
+  const tarjetaTotal =
+    config.fixedExpenses
+      .filter((i) => status.expensesPaid.includes(i.id) && i.method === "tarjeta")
+      .reduce((s, i) => s + Number(i.amount), 0) +
+    dailyExpenses.filter((e) => e.method === "tarjeta").reduce((s, i) => s + Number(i.amount), 0) +
+    loanRowsThisMonth.filter((r) => r.inst.paid && r.method === "tarjeta").reduce((s, r) => s + Number(r.inst.amount), 0);
+  const cuentaTotal =
+    config.fixedExpenses
+      .filter((i) => status.expensesPaid.includes(i.id) && i.method === "cuenta")
+      .reduce((s, i) => s + Number(i.amount), 0) +
+    dailyExpenses.filter((e) => e.method === "cuenta").reduce((s, i) => s + Number(i.amount), 0) +
+    loanRowsThisMonth.filter((r) => r.inst.paid && r.method === "cuenta").reduce((s, r) => s + Number(r.inst.amount), 0);
+
+  function changeMonth(delta) {
+    const d = new Date(selectedDate);
+    d.setMonth(d.getMonth() + delta);
+    setSelectedDate(d);
+  }
+
+  if (showWelcome) {
+    return (
+      <div style={{ ...wrap, minHeight: 420, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <FontImport />
+        <div className="fx-catbg" />
+        <div style={{ position: "relative", maxWidth: 360, textAlign: "center" }}>
+          <div style={{ fontFamily: "'Fraunces', serif", fontSize: 24, fontWeight: 600, color: "var(--ink)", marginBottom: 8 }}>
+            ¡Hola! 🐾
+          </div>
+          <p style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink-soft)", lineHeight: 1.5, marginBottom: 20 }}>
+            Esta app guarda tus datos en un archivo, no en un servidor. Si ya tenés una copia descargada, subila acá. Si es tu primera vez, arrancá de cero.
+          </p>
+          <label style={{ ...addBtn, display: "inline-block", cursor: "pointer", marginBottom: 12 }}>
+            Cargar mi copia guardada
+            <input type="file" accept="application/json" onChange={handleWelcomeFile} style={{ display: "none" }} />
+          </label>
+          <div>
+            <button className="fx-btn" onClick={() => setShowWelcome(false)} style={{ ...backupBtn, marginTop: 4 }}>
+              Empezar de cero
+            </button>
+          </div>
+          {welcomeMsg && <p style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--red)", marginTop: 14 }}>{welcomeMsg}</p>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={wrap}>
+      <FontImport />
+      <div className="fx-catbg" />
+      <style>{`
+        * { box-sizing: border-box; }
+        .fx-btn { cursor: pointer; border: none; transition: opacity .15s ease; }
+        .fx-btn:hover { opacity: .85; }
+        .fx-tab { cursor: pointer; }
+        .fx-row:hover .fx-del { opacity: 1; }
+        .fx-del { opacity: 0; transition: opacity .15s ease; }
+        input, select { font-family: 'Inter', sans-serif; }
+
+        @media (max-width: 520px) {
+          .fx-hero { padding: 14px 16px 12px !important; }
+          .fx-tabs { padding: 0 16px !important; }
+          .fx-body { padding: 16px !important; }
+          .fx-balance { font-size: 22px !important; }
+          .fx-title { font-size: 19px !important; }
+          .fx-resumen-grid { grid-template-columns: 1fr !important; }
+          .fx-form-row { flex-direction: column !important; align-items: stretch !important; }
+          .fx-form-row input, .fx-form-row select { width: 100% !important; }
+          .fx-stats { gap: 10px 20px !important; margin-top: 10px !important; display: grid !important; grid-template-columns: 1fr 1fr !important; }
+          .fx-cat { width: 34px !important; height: 34px !important; top: 8px !important; right: 12px !important; }
+          .fx-del { opacity: 1; }
+          .fx-balance-block { margin-top: 10px !important; }
+          .fx-stamp { padding: 3px 9px !important; font-size: 10px !important; }
+          .fx-proyectado { display: none !important; }
+        }
+      `}</style>
+
+      <CatBackground />
+
+      {/* Header / hero */}
+      <div className="fx-hero" style={hero}>
+        <CatPeek />
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink-soft)", marginBottom: 4 }}>
+              Mis finanzas
+            </div>
+            <div className="fx-title" style={{ fontFamily: "'Fraunces', serif", fontSize: 28, fontWeight: 600, color: "var(--ink)" }}>
+              Libro de cuentas
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button className="fx-btn" onClick={() => changeMonth(-1)} style={navBtn}>‹</button>
+            <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--ink)", minWidth: 130, textAlign: "center" }}>
+              {monthLabel(selectedDate)}
+            </div>
+            <button className="fx-btn" onClick={() => changeMonth(1)} style={navBtn}>›</button>
+          </div>
+        </div>
+
+        <div className="fx-balance-block" style={{ display: "flex", alignItems: "center", gap: 20, marginTop: 22, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)" }}>Saldo real del mes</div>
+            <div className="fx-balance" style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 34, fontWeight: 600, color: balanceActual >= 0 ? "var(--green)" : "var(--red)" }}>
+              {fmtGs(balanceActual)}
+            </div>
+            <div className="fx-proyectado" style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)", marginTop: 2 }}>
+              Proyectado si cobrás/pagás todo: {fmtGs(balanceProyectado)}
+            </div>
+          </div>
+          <div className="fx-stamp" style={stamp(balanceActual >= 0)}>
+            {balanceActual >= 0 ? "AL DÍA" : "EN ROJO"}
+          </div>
+        </div>
+
+        <div className="fx-stats" style={{ display: "flex", gap: 24, marginTop: 18, flexWrap: "wrap" }}>
+          <MiniStat label="Tarjeta de crédito" value={fmtGs(tarjetaTotal)} color="var(--indigo)" />
+          <MiniStat label="Cuenta / efectivo" value={fmtGs(cuentaTotal)} color="var(--gold)" />
+          <MiniStat label="Ingresos fijos cobrados" value={`${fmtGs(fixedIncRecTotal)} / ${fmtGs(fixedIncTotal)}`} color="var(--green)" />
+          <MiniStat label="Gastos fijos pagados" value={`${fmtGs(fixedExpPaidTotal)} / ${fmtGs(fixedExpTotal)}`} color="var(--red)" />
+        </div>
+      </div>
+
+      {dirty && (
+        <div style={dirtyBanner}>
+          Tenés cambios sin guardar — tocá "Guardar mi copia" antes de cerrar para no perderlos.
+        </div>
+      )}
+
+      <BackupBar
+        config={config}
+        dailyEntries={dailyEntries}
+        monthlyStatus={monthlyStatus}
+        loans={loans}
+        dirty={dirty}
+        onSaved={() => setDirty(false)}
+        onRestore={(data) => loadFromData(data)}
+      />
+
+      {/* Tabs */}
+      <div className="fx-tabs" style={tabsBar}>
+        {[
+          ["resumen", "Resumen"],
+          ["fijos", "Fijos del mes"],
+          ["prestamos", "Montos variables"],
+          ["diario", "Diario"],
+        ].map(([key, label]) => (
+          <div
+            key={key}
+            className="fx-tab"
+            onClick={() => setTab(key)}
+            style={{
+              ...tabItem,
+              color: tab === key ? "var(--ink)" : "var(--ink-soft)",
+              borderBottom: tab === key ? "2px solid var(--ink)" : "2px solid transparent",
+              fontWeight: tab === key ? 600 : 500,
+            }}
+          >
+            {label}
+          </div>
+        ))}
+      </div>
+
+      <div className="fx-body" style={{ padding: "20px 24px 32px", position: "relative" }}>
+        {tab === "resumen" && (
+          <Resumen
+            fixedExpenses={config.fixedExpenses}
+            fixedIncome={config.fixedIncome}
+            status={status}
+            dailyExpenses={dailyExpenses}
+            dailyIncome={dailyIncome}
+            loanRowsThisMonth={loanRowsThisMonth}
+            onToggleLoan={toggleInstallmentPaid}
+            mKey={mKey}
+          />
+        )}
+        {tab === "fijos" && (
+          <Fijos
+            fixedExpenses={config.fixedExpenses}
+            fixedIncome={config.fixedIncome}
+            status={status}
+            onAddExpense={addFixedExpense}
+            onAddIncome={addFixedIncome}
+            onDeleteExpense={deleteFixedExpense}
+            onDeleteIncome={deleteFixedIncome}
+            onToggleExpense={toggleExpensePaid}
+            onToggleIncome={toggleIncomeReceived}
+          />
+        )}
+        {tab === "prestamos" && (
+          <Prestamos
+            loans={loans}
+            mKey={mKey}
+            monthLabel={monthLabel(selectedDate)}
+            onAddLoan={addLoan}
+            onDeleteLoan={deleteLoan}
+            onAddInstallments={addInstallments}
+            onDeleteInstallment={deleteInstallment}
+            onToggleInstallment={toggleInstallmentPaid}
+          />
+        )}
+        {tab === "diario" && (
+          <Diario
+            entries={monthDaily}
+            onAdd={addDailyEntry}
+            onDelete={deleteDailyEntry}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MiniStat({ label, value, color }) {
+  return (
+    <div>
+      <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11, color: "var(--ink-soft)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
+      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 600, color }}>{value}</div>
+    </div>
+  );
+}
+
+function Resumen({ fixedExpenses, fixedIncome, status, dailyExpenses, dailyIncome, loanRowsThisMonth, onToggleLoan, mKey }) {
+  const pendingExp = fixedExpenses.filter((i) => !status.expensesPaid.includes(i.id));
+  const pendingInc = fixedIncome.filter((i) => !status.incomePaid.includes(i.id));
+  const pendingLoans = (loanRowsThisMonth || []).filter((r) => !r.inst.paid);
+  return (
+    <div style={{ display: "grid", gap: 20 }}>
+      <div style={card}>
+        <SectionTitle>Pendiente de pagar este mes</SectionTitle>
+        {pendingExp.length === 0 && pendingLoans.length === 0 ? (
+          <Empty>No tenés gastos fijos pendientes. ✓</Empty>
+        ) : (
+          <>
+            {pendingExp.map((i) => (
+              <div key={i.id} style={listRow}>
+                <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)" }}>{i.name}</span>
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--red)" }}>{fmtGs(i.amount)}</span>
+              </div>
+            ))}
+            {pendingLoans.map((r) => (
+              <div key={r.loanId} style={listRow}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <input type="checkbox" checked={false} onChange={() => onToggleLoan(r.loanId, mKey)} style={checkbox} />
+                  <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)" }}>{r.name} (cuota)</span>
+                </label>
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--red)" }}>{fmtGs(r.inst.amount)}</span>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+      <div style={card}>
+        <SectionTitle>Pendiente de cobrar este mes</SectionTitle>
+        {pendingInc.length === 0 ? (
+          <Empty>Ya cobraste todos tus ingresos fijos. ✓</Empty>
+        ) : (
+          pendingInc.map((i) => (
+            <div key={i.id} style={listRow}>
+              <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)" }}>{i.name}</span>
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--green)" }}>{fmtGs(i.amount)}</span>
+            </div>
+          ))
+        )}
+      </div>
+      <div className="fx-resumen-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+        <div style={card}>
+          <SectionTitle>Gastos diarios del mes</SectionTitle>
+          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 22, color: "var(--red)", fontWeight: 600 }}>
+            {fmtGs(dailyExpenses.reduce((s, i) => s + Number(i.amount), 0))}
+          </div>
+          <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)" }}>{dailyExpenses.length} registros</div>
+        </div>
+        <div style={card}>
+          <SectionTitle>Ingresos diarios / extra</SectionTitle>
+          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 22, color: "var(--green)", fontWeight: 600 }}>
+            {fmtGs(dailyIncome.reduce((s, i) => s + Number(i.amount), 0))}
+          </div>
+          <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)" }}>{dailyIncome.length} registros</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Fijos({ fixedExpenses, fixedIncome, status, onAddExpense, onAddIncome, onDeleteExpense, onDeleteIncome, onToggleExpense, onToggleIncome }) {
+  const [expForm, setExpForm] = useState({ name: "", amount: "", method: "cuenta" });
+  const [incForm, setIncForm] = useState({ name: "", amount: "" });
+
+  return (
+    <div style={{ display: "grid", gap: 28 }}>
+      <div style={card}>
+        <SectionTitle>Gastos fijos mensuales</SectionTitle>
+        {fixedExpenses.length === 0 && <Empty>Todavía no agregaste ningún gasto fijo.</Empty>}
+        {fixedExpenses.map((i) => {
+          const paid = status.expensesPaid.includes(i.id);
+          return (
+            <div key={i.id} className="fx-row" style={listRow}>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", flex: 1 }}>
+                <input type="checkbox" checked={paid} onChange={() => onToggleExpense(i.id)} style={checkbox} />
+                <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)", textDecoration: paid ? "line-through" : "none", opacity: paid ? 0.55 : 1 }}>
+                  {i.name}
+                </span>
+                <span style={methodBadge(i.method)}>{i.method === "tarjeta" ? "Tarjeta" : "Cuenta/Efectivo"}</span>
+              </label>
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--ink)", marginRight: 12 }}>{fmtGs(i.amount)}</span>
+              <button className="fx-btn fx-del" onClick={() => onDeleteExpense(i.id)} style={delBtn}>✕</button>
+            </div>
+          );
+        })}
+        <div className="fx-form-row" style={formRow}>
+          <input placeholder="Nombre (ej. Alquiler)" value={expForm.name} onChange={(e) => setExpForm({ ...expForm, name: e.target.value })} style={{ ...input, flex: 2 }} />
+          <input placeholder="Monto" type="number" value={expForm.amount} onChange={(e) => setExpForm({ ...expForm, amount: e.target.value })} style={{ ...input, flex: 1 }} />
+          <select value={expForm.method} onChange={(e) => setExpForm({ ...expForm, method: e.target.value })} style={{ ...input, flex: 1 }}>
+            <option value="cuenta">Cuenta/Efectivo</option>
+            <option value="tarjeta">Tarjeta</option>
+          </select>
+          <button
+            className="fx-btn"
+            type="button"
+            onClick={() => {
+              if (!expForm.name || !expForm.amount) return;
+              onAddExpense({ name: expForm.name, amount: Number(expForm.amount), method: expForm.method });
+              setExpForm({ name: "", amount: "", method: "cuenta" });
+            }}
+            style={addBtn}
+          >
+            Agregar
+          </button>
+        </div>
+      </div>
+
+      <div style={card}>
+        <SectionTitle>Ingresos fijos mensuales</SectionTitle>
+        {fixedIncome.length === 0 && <Empty>Todavía no agregaste ningún ingreso fijo.</Empty>}
+        {fixedIncome.map((i) => {
+          const received = status.incomePaid.includes(i.id);
+          return (
+            <div key={i.id} className="fx-row" style={listRow}>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", flex: 1 }}>
+                <input type="checkbox" checked={received} onChange={() => onToggleIncome(i.id)} style={checkbox} />
+                <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)", textDecoration: received ? "line-through" : "none", opacity: received ? 0.55 : 1 }}>
+                  {i.name}
+                </span>
+              </label>
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--ink)", marginRight: 12 }}>{fmtGs(i.amount)}</span>
+              <button className="fx-btn fx-del" onClick={() => onDeleteIncome(i.id)} style={delBtn}>✕</button>
+            </div>
+          );
+        })}
+        <div className="fx-form-row" style={formRow}>
+          <input placeholder="Nombre (ej. Sueldo)" value={incForm.name} onChange={(e) => setIncForm({ ...incForm, name: e.target.value })} style={{ ...input, flex: 2 }} />
+          <input placeholder="Monto" type="number" value={incForm.amount} onChange={(e) => setIncForm({ ...incForm, amount: e.target.value })} style={{ ...input, flex: 1 }} />
+          <button
+            className="fx-btn"
+            type="button"
+            onClick={() => {
+              if (!incForm.name || !incForm.amount) return;
+              onAddIncome({ name: incForm.name, amount: Number(incForm.amount) });
+              setIncForm({ name: "", amount: "" });
+            }}
+            style={addBtn}
+          >
+            Agregar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Prestamos({ loans, mKey, monthLabel, onAddLoan, onDeleteLoan, onAddInstallments, onDeleteInstallment, onToggleInstallment }) {
+  const [loanForm, setLoanForm] = useState({ name: "", method: "cuenta" });
+  const [expandedId, setExpandedId] = useState(null);
+
+  return (
+    <div style={{ display: "grid", gap: 20 }}>
+      <div style={card}>
+        <SectionTitle>Nuevo gasto de monto variable</SectionTitle>
+        <p style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: "var(--ink-soft)", marginTop: -4, marginBottom: 12 }}>
+          Para tarjeta de crédito, préstamos, o cualquier gasto fijo que cambie de monto cada mes. Cargalo acá y después su cronograma (el monto de cada mes).
+        </p>
+        <div className="fx-form-row" style={formRow}>
+          <input placeholder="Nombre (ej. Tarjeta Visa Continental)" value={loanForm.name} onChange={(e) => setLoanForm({ ...loanForm, name: e.target.value })} style={{ ...input, flex: 2 }} />
+          <select value={loanForm.method} onChange={(e) => setLoanForm({ ...loanForm, method: e.target.value })} style={{ ...input, flex: 1 }}>
+            <option value="cuenta">Cuenta/Efectivo</option>
+            <option value="tarjeta">Tarjeta</option>
+          </select>
+          <button
+            className="fx-btn"
+            type="button"
+            onClick={() => {
+              if (!loanForm.name) return;
+              onAddLoan(loanForm);
+              setLoanForm({ name: "", method: "cuenta" });
+            }}
+            style={addBtn}
+          >
+            Crear
+          </button>
+        </div>
+      </div>
+
+      {loans.length === 0 && <Empty>Todavía no cargaste ningún gasto de monto variable.</Empty>}
+
+      {loans.map((loan) => {
+        const thisMonth = loan.installments[mKey];
+        const expanded = expandedId === loan.id;
+        const monthsSorted = Object.keys(loan.installments).sort();
+        return (
+          <div key={loan.id} style={card}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontFamily: "'Fraunces', serif", fontSize: 16, fontWeight: 600, color: "var(--ink)" }}>{loan.name}</span>
+                <span style={methodBadge(loan.method)}>{loan.method === "tarjeta" ? "Tarjeta" : "Cuenta/Efectivo"}</span>
+              </div>
+              <button className="fx-btn" onClick={() => onDeleteLoan(loan.id)} style={delBtn}>✕ eliminar</button>
+            </div>
+
+            {thisMonth ? (
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "8px 0", borderBottom: "1px solid #EEF1EE" }}>
+                <input type="checkbox" checked={thisMonth.paid} onChange={() => onToggleInstallment(loan.id, mKey)} style={checkbox} />
+                <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)", textDecoration: thisMonth.paid ? "line-through" : "none", opacity: thisMonth.paid ? 0.55 : 1, flex: 1 }}>
+                  Cuota de {monthLabel}
+                </span>
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--ink)" }}>{fmtGs(thisMonth.amount)}</span>
+              </label>
+            ) : (
+              <Empty>No hay cuota cargada para {monthLabel}.</Empty>
+            )}
+
+            <div
+              className="fx-tab"
+              onClick={() => setExpandedId(expanded ? null : loan.id)}
+              style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--indigo)", fontWeight: 600, marginTop: 10, cursor: "pointer" }}
+            >
+              {expanded ? "Ocultar cronograma completo ▲" : `Ver / cargar cronograma completo (${monthsSorted.length} cuotas cargadas) ▼`}
+            </div>
+
+            {expanded && (
+              <div style={{ marginTop: 12 }}>
+                {monthsSorted.length > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    {monthsSorted.map((m) => (
+                      <div key={m} className="fx-row" style={listRow}>
+                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "var(--ink)" }}>{m}</span>
+                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: loan.installments[m].paid ? "var(--green)" : "var(--ink-soft)" }}>
+                          {fmtGs(loan.installments[m].amount)} {loan.installments[m].paid ? "· pagada" : ""}
+                        </span>
+                        <button className="fx-btn fx-del" onClick={() => onDeleteInstallment(loan.id, m)} style={delBtn}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <LoanScheduleForm loanId={loan.id} onAddInstallments={onAddInstallments} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function LoanScheduleForm({ loanId, onAddInstallments }) {
+  const [single, setSingle] = useState({ month: todayISO().slice(0, 7), amount: "" });
+  const [bulkText, setBulkText] = useState("");
+  const [bulkMsg, setBulkMsg] = useState("");
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <div>
+        <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)", marginBottom: 6 }}>Agregar una cuota</div>
+        <div className="fx-form-row" style={formRow}>
+          <input type="month" value={single.month} onChange={(e) => setSingle({ ...single, month: e.target.value })} style={{ ...input, flex: 1 }} />
+          <input placeholder="Monto de esa cuota" type="number" value={single.amount} onChange={(e) => setSingle({ ...single, amount: e.target.value })} style={{ ...input, flex: 1 }} />
+          <button
+            className="fx-btn"
+            type="button"
+            onClick={() => {
+              if (!single.month || !single.amount) return;
+              onAddInstallments(loanId, [{ month: single.month, amount: Number(single.amount) }]);
+              setSingle({ ...single, amount: "" });
+            }}
+            style={addBtn}
+          >
+            Agregar
+          </button>
+        </div>
+      </div>
+
+      <div>
+        <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)", marginBottom: 6 }}>
+          O pegá varias de una vez (una por línea: <code>2026-07:350000</code>)
+        </div>
+        <textarea
+          value={bulkText}
+          onChange={(e) => setBulkText(e.target.value)}
+          placeholder={"2026-07:350000\n2026-08:342000\n2026-09:334000"}
+          rows={4}
+          style={{ ...input, width: "100%", fontFamily: "'IBM Plex Mono', monospace", resize: "vertical" }}
+        />
+        <button
+          className="fx-btn"
+          type="button"
+          onClick={() => {
+            const lines = bulkText.split("\n").map((l) => l.trim()).filter(Boolean);
+            const entries = [];
+            for (const line of lines) {
+              const [month, amountStr] = line.split(":").map((s) => s && s.trim());
+              const amount = Number(amountStr);
+              if (/^\d{4}-\d{2}$/.test(month) && !isNaN(amount) && amount > 0) {
+                entries.push({ month, amount });
+              }
+            }
+            if (entries.length === 0) {
+              setBulkMsg("No se reconoció ninguna línea. Usá el formato AAAA-MM:monto");
+            } else {
+              onAddInstallments(loanId, entries);
+              setBulkText("");
+              setBulkMsg(`${entries.length} cuota(s) cargada(s) ✓`);
+            }
+            setTimeout(() => setBulkMsg(""), 3000);
+          }}
+          style={{ ...addBtn, marginTop: 8 }}
+        >
+          Cargar todas
+        </button>
+        {bulkMsg && <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--green)", marginTop: 6 }}>{bulkMsg}</div>}
+      </div>
+    </div>
+  );
+}
+
+function Diario({ entries, onAdd, onDelete }) {
+  const [form, setForm] = useState({ type: "expense", date: todayISO(), desc: "", amount: "", method: "cuenta" });
+  const sorted = [...entries].sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  return (
+    <div style={{ display: "grid", gap: 20 }}>
+      <div style={card}>
+        <SectionTitle>Registrar movimiento diario</SectionTitle>
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" onClick={() => setForm({ ...form, type: "expense" })} style={toggleBtn(form.type === "expense", "var(--red)")}>Gasto</button>
+            <button type="button" onClick={() => setForm({ ...form, type: "income" })} style={toggleBtn(form.type === "income", "var(--green)")}>Ingreso</button>
+          </div>
+          <div className="fx-form-row" style={formRow}>
+            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} style={{ ...input, flex: 1 }} />
+            <input placeholder="Descripción" value={form.desc} onChange={(e) => setForm({ ...form, desc: e.target.value })} style={{ ...input, flex: 2 }} />
+            <input placeholder="Monto" type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} style={{ ...input, flex: 1 }} />
+            {form.type === "expense" && (
+              <select value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value })} style={{ ...input, flex: 1 }}>
+                <option value="cuenta">Cuenta/Efectivo</option>
+                <option value="tarjeta">Tarjeta</option>
+              </select>
+            )}
+            <button
+              className="fx-btn"
+              type="button"
+              onClick={() => {
+                if (!form.desc || !form.amount) return;
+                const entry = { type: form.type, date: form.date, desc: form.desc, amount: Number(form.amount) };
+                if (form.type === "expense") entry.method = form.method;
+                onAdd(entry);
+                setForm({ ...form, desc: "", amount: "" });
+              }}
+              style={addBtn}
+            >
+              Agregar
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div style={card}>
+        <SectionTitle>Movimientos del mes</SectionTitle>
+        {sorted.length === 0 && <Empty>Todavía no registraste movimientos este mes.</Empty>}
+        {sorted.map((e) => (
+          <div key={e.id} className="fx-row" style={listRow}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1 }}>
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "var(--ink-soft)", minWidth: 70 }}>{e.date.slice(8, 10)}/{e.date.slice(5, 7)}</span>
+              <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)" }}>{e.desc}</span>
+              {e.type === "expense" && <span style={methodBadge(e.method)}>{e.method === "tarjeta" ? "Tarjeta" : "Cuenta/Efectivo"}</span>}
+            </div>
+            <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: e.type === "expense" ? "var(--red)" : "var(--green)", marginRight: 12 }}>
+              {e.type === "expense" ? "-" : "+"}{fmtGs(e.amount)}
+            </span>
+            <button className="fx-btn fx-del" onClick={() => onDelete(e.id)} style={delBtn}>✕</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BackupBar({ config, dailyEntries, monthlyStatus, loans, dirty, onSaved, onRestore }) {
+  const [msg, setMsg] = useState("");
+
+  function exportBackup() {
+    const data = { config, dailyEntries, monthlyStatus, loans, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `finanzas-backup-${todayISO()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    onSaved();
+    setMsg("Guardado ✓ — buscá el archivo en tu carpeta de Descargas");
+    setTimeout(() => setMsg(""), 3500);
+  }
+
+  function exportExcel() {
+    const wb = XLSX.utils.book_new();
+
+    const wsExpenses = XLSX.utils.json_to_sheet(
+      config.fixedExpenses.map((i) => ({ Nombre: i.name, Monto: i.amount, "Método de pago": i.method === "tarjeta" ? "Tarjeta" : "Cuenta/Efectivo" }))
+    );
+    XLSX.utils.book_append_sheet(wb, wsExpenses, "Gastos fijos");
+
+    const wsIncome = XLSX.utils.json_to_sheet(config.fixedIncome.map((i) => ({ Nombre: i.name, Monto: i.amount })));
+    XLSX.utils.book_append_sheet(wb, wsIncome, "Ingresos fijos");
+
+    const loanRows = [];
+    loans.forEach((l) => {
+      Object.keys(l.installments)
+        .sort()
+        .forEach((m) => {
+          const inst = l.installments[m];
+          loanRows.push({
+            Concepto: l.name,
+            Mes: m,
+            Monto: inst.amount,
+            "Método de pago": l.method === "tarjeta" ? "Tarjeta" : "Cuenta/Efectivo",
+            Pagada: inst.paid ? "Sí" : "No",
+          });
+        });
+    });
+    const wsLoans = XLSX.utils.json_to_sheet(loanRows);
+    XLSX.utils.book_append_sheet(wb, wsLoans, "Montos variables");
+
+    const wsDaily = XLSX.utils.json_to_sheet(
+      [...dailyEntries]
+        .sort((a, b) => (a.date < b.date ? -1 : 1))
+        .map((e) => ({
+          Fecha: e.date,
+          Tipo: e.type === "expense" ? "Gasto" : "Ingreso",
+          Descripción: e.desc,
+          Monto: e.amount,
+          "Método de pago": e.type === "expense" ? (e.method === "tarjeta" ? "Tarjeta" : "Cuenta/Efectivo") : "",
+        }))
+    );
+    XLSX.utils.book_append_sheet(wb, wsDaily, "Diario");
+
+    // Resumen por mes: junta todos los meses que aparecen en algún lado
+    const months = new Set();
+    Object.keys(monthlyStatus).forEach((m) => months.add(m));
+    dailyEntries.forEach((e) => months.add(e.date.slice(0, 7)));
+    loans.forEach((l) => Object.keys(l.installments).forEach((m) => months.add(m)));
+
+    const resumenRows = [...months].sort().map((m) => {
+      const st = monthlyStatus[m] || { expensesPaid: [], incomePaid: [] };
+      const loanInst = loans.map((l) => l.installments[m]).filter(Boolean);
+      const fixedExpTotal = config.fixedExpenses.reduce((s, i) => s + Number(i.amount), 0) + loanInst.reduce((s, i) => s + Number(i.amount), 0);
+      const fixedExpPaid =
+        config.fixedExpenses.filter((i) => st.expensesPaid.includes(i.id)).reduce((s, i) => s + Number(i.amount), 0) +
+        loanInst.filter((i) => i.paid).reduce((s, i) => s + Number(i.amount), 0);
+      const fixedIncTotal = config.fixedIncome.reduce((s, i) => s + Number(i.amount), 0);
+      const fixedIncPaid = config.fixedIncome.filter((i) => st.incomePaid.includes(i.id)).reduce((s, i) => s + Number(i.amount), 0);
+      const monthDaily = dailyEntries.filter((e) => e.date.slice(0, 7) === m);
+      const dailyExp = monthDaily.filter((e) => e.type === "expense").reduce((s, e) => s + Number(e.amount), 0);
+      const dailyInc = monthDaily.filter((e) => e.type === "income").reduce((s, e) => s + Number(e.amount), 0);
+      return {
+        Mes: m,
+        "Ingresos cobrados": fixedIncPaid + dailyInc,
+        "Ingresos proyectados": fixedIncTotal + dailyInc,
+        "Gastos pagados": fixedExpPaid + dailyExp,
+        "Gastos proyectados": fixedExpTotal + dailyExp,
+        "Saldo real": fixedIncPaid + dailyInc - (fixedExpPaid + dailyExp),
+        "Saldo proyectado": fixedIncTotal + dailyInc - (fixedExpTotal + dailyExp),
+      };
+    });
+    const wsResumen = XLSX.utils.json_to_sheet(resumenRows);
+    XLSX.utils.book_append_sheet(wb, wsResumen, "Resumen por mes");
+
+    XLSX.writeFile(wb, `finanzas-${todayISO()}.xlsx`);
+    setMsg("Excel descargado ✓ — buscalo en tu carpeta de Descargas");
+    setTimeout(() => setMsg(""), 3500);
+  }
+
+  function importBackup(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        onRestore(data);
+        setMsg("Datos cargados ✓");
+      } catch (err) {
+        setMsg("No se pudo leer ese archivo.");
+      }
+      setTimeout(() => setMsg(""), 3500);
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
+  return (
+    <div className="fx-backupbar" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 24px", background: "var(--card)", borderBottom: "1px solid #DFE6E1", flexWrap: "wrap" }}>
+      <button className="fx-btn" onClick={exportBackup} style={{ ...addBtn, background: dirty ? "var(--red)" : "var(--ink)" }}>
+        {dirty ? "Guardar mi copia (cambios sin guardar)" : "Guardar mi copia"}
+      </button>
+      <label style={{ ...backupBtn, display: "inline-block", cursor: "pointer" }}>
+        Cargar copia
+        <input type="file" accept="application/json" onChange={importBackup} style={{ display: "none" }} />
+      </label>
+      <button className="fx-btn" onClick={exportExcel} style={backupBtn}>
+        Exportar a Excel
+      </button>
+      {msg && <span style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--green)" }}>{msg}</span>}
+    </div>
+  );
+}
+
+function SectionTitle({ children }) {
+  return (
+    <div style={{ fontFamily: "'Fraunces', serif", fontSize: 17, fontWeight: 600, color: "var(--ink)", marginBottom: 12 }}>
+      {children}
+    </div>
+  );
+}
+function Empty({ children }) {
+  return <div style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: "var(--ink-soft)", padding: "8px 0" }}>{children}</div>;
+}
+function CatBackground() {
+  return (
+    <style>{`
+      .fx-catbg {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        opacity: 1;
+        background-image: url("data:image/svg+xml,${encodeURIComponent(
+          `<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'>
+            <g fill='#1B3A34' fill-opacity='0.13'>
+              <ellipse cx='60' cy='78' rx='13' ry='10'/>
+              <circle cx='40' cy='58' r='6'/>
+              <circle cx='53' cy='48' r='6'/>
+              <circle cx='67' cy='48' r='6'/>
+              <circle cx='80' cy='58' r='6'/>
+            </g>
+          </svg>`
+        )}");
+        background-repeat: repeat;
+        background-size: 78px 78px;
+      }
+    `}</style>
+  );
+}
+
+function CatPeek() {
+  return (
+    <svg
+      className="fx-cat"
+      width="58"
+      height="58"
+      viewBox="0 0 58 58"
+      style={{ position: "absolute", top: 14, right: 18, pointerEvents: "none" }}
+    >
+      <g>
+        <path d="M12 30 L18 12 L26 24 Z" fill="#E7A9B6" />
+        <path d="M46 30 L40 12 L32 24 Z" fill="#E7A9B6" />
+        <path d="M14 32 L20 15 L27 26 Z" fill="#F6D9DF" />
+        <path d="M44 32 L38 15 L31 26 Z" fill="#F6D9DF" />
+        <circle cx="29" cy="34" r="18" fill="#F6D9DF" stroke="#1B3A34" strokeOpacity="0.12" strokeWidth="1" />
+        <circle cx="22" cy="32" r="2.4" fill="#1B3A34" />
+        <circle cx="36" cy="32" r="2.4" fill="#1B3A34" />
+        <path d="M29 37 q-2 3 -4 0" stroke="#1B3A34" strokeWidth="1.4" fill="none" strokeLinecap="round" />
+        <path d="M29 37 q2 3 4 0" stroke="#1B3A34" strokeWidth="1.4" fill="none" strokeLinecap="round" />
+        <ellipse cx="29" cy="38.5" rx="2" ry="1.4" fill="#C97F8F" />
+        <path d="M13 39 L4 37 M13 41 L4 42 M45 39 L54 37 M45 41 L54 42" stroke="#1B3A34" strokeOpacity="0.35" strokeWidth="1" strokeLinecap="round" />
+      </g>
+    </svg>
+  );
+}
+
+function FontImport() {
+  return (
+    <style>{`@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');`}</style>
+  );
+}
+
+/* ---- style tokens ---- */
+const wrap = {
+  "--ink": "#1B3A34",
+  "--ink-soft": "#5C7570",
+  "--paper": "#EFF3F0",
+  "--card": "#FBFCFA",
+  "--green": "#2F7D51",
+  "--red": "#B23A48",
+  "--gold": "#B4832E",
+  "--indigo": "#4C4FBF",
+  background: "var(--paper)",
+  minHeight: "100%",
+  borderRadius: 16,
+  overflow: "hidden",
+  border: "1px solid #DFE6E1",
+  position: "relative",
+};
+const hero = {
+  background: "linear-gradient(180deg, #FBFCFA 0%, #EFF3F0 100%)",
+  padding: "24px 24px 20px",
+  borderBottom: "1px solid #DFE6E1",
+  position: "relative",
+};
+const navBtn = {
+  width: 28, height: 28, borderRadius: 8, background: "#fff", border: "1px solid #DFE6E1",
+  color: "var(--ink)", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center",
+};
+function stamp(positive) {
+  return {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 12,
+    fontWeight: 600,
+    letterSpacing: "0.08em",
+    color: positive ? "var(--green)" : "var(--red)",
+    border: `2px dashed ${positive ? "var(--green)" : "var(--red)"}`,
+    borderRadius: 8,
+    padding: "6px 14px",
+    transform: "rotate(-4deg)",
+  };
+}
+const tabsBar = { display: "flex", gap: 4, padding: "0 24px", background: "var(--card)", borderBottom: "1px solid #DFE6E1" };
+const tabItem = { padding: "14px 10px", fontFamily: "Inter, sans-serif", fontSize: 14, cursor: "pointer" };
+const card = { background: "var(--card)", border: "1px solid #E3E9E5", borderRadius: 12, padding: 18 };
+const listRow = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid #EEF1EE" };
+const checkbox = { width: 17, height: 17, accentColor: "#2F7D51" };
+function methodBadge(method) {
+  return {
+    fontFamily: "Inter, sans-serif",
+    fontSize: 10,
+    fontWeight: 600,
+    padding: "2px 8px",
+    borderRadius: 999,
+    background: method === "tarjeta" ? "rgba(76,79,191,0.12)" : "rgba(180,131,46,0.14)",
+    color: method === "tarjeta" ? "var(--indigo)" : "var(--gold)",
+  };
+}
+const formRow = { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" };
+const input = {
+  padding: "9px 10px", borderRadius: 8, border: "1px solid #D8E0DB", fontSize: 13, minWidth: 90,
+  background: "#fff", color: "var(--ink)",
+};
+const addBtn = { padding: "9px 16px", borderRadius: 8, background: "var(--ink)", color: "#fff", fontFamily: "Inter, sans-serif", fontSize: 13, fontWeight: 600 };
+const delBtn = { background: "transparent", color: "var(--red)", fontSize: 13, padding: "2px 6px" };
+function toggleBtn(active, color) {
+  return {
+    padding: "7px 16px", borderRadius: 999, fontFamily: "Inter, sans-serif", fontSize: 13, fontWeight: 600,
+    background: active ? color : "#fff", color: active ? "#fff" : "var(--ink-soft)",
+    border: `1px solid ${active ? color : "#D8E0DB"}`,
+  };
+}
+const backupBtn = {
+  padding: "6px 12px", borderRadius: 8, background: "#fff", border: "1px solid #D8E0DB",
+  color: "var(--ink)", fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600,
+};
+const dirtyBanner = {
+  background: "#FBF3E4", color: "var(--gold)", fontFamily: "Inter, sans-serif", fontSize: 13, fontWeight: 600,
+  padding: "8px 24px", borderBottom: "1px solid #F0E2C4",
+};
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<FinanzasTracker />);
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
