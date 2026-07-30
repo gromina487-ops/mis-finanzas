@@ -49,6 +49,8 @@ function newId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
+const LOCAL_KEY = "finanzas-app-data-v1";
+
 function FinanzasTracker() {
   const [config, setConfig] = useState({ fixedExpenses: [], fixedIncome: [] });
   const [dailyEntries, setDailyEntries] = useState([]);
@@ -59,6 +61,8 @@ function FinanzasTracker() {
   const [dirty, setDirty] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [welcomeMsg, setWelcomeMsg] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [autoSaved, setAutoSaved] = useState(false);
 
   function loadFromData(data) {
     if (data.config) setConfig(data.config);
@@ -67,6 +71,28 @@ function FinanzasTracker() {
     if (data.loans) setLoans(data.loans);
     setDirty(false);
   }
+
+  // Al abrir la app, fijate si ya hay datos guardados en este navegador
+  React.useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LOCAL_KEY);
+      if (raw) {
+        loadFromData(JSON.parse(raw));
+        setShowWelcome(false);
+      }
+    } catch (e) {}
+    setLoaded(true);
+  }, []);
+
+  // Cada vez que algo cambia, se guarda solo en este navegador (no hace falta descargar archivo)
+  React.useEffect(() => {
+    if (!loaded || showWelcome) return;
+    try {
+      const data = { config, dailyEntries, monthlyStatus, loans };
+      localStorage.setItem(LOCAL_KEY, JSON.stringify(data));
+      setAutoSaved(true);
+    } catch (e) {}
+  }, [config, dailyEntries, monthlyStatus, loans, loaded, showWelcome]);
 
   function handleWelcomeFile(e) {
     const file = e.target.files[0];
@@ -225,7 +251,7 @@ function FinanzasTracker() {
             ¡Hola! 🐾
           </div>
           <p style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink-soft)", lineHeight: 1.5, marginBottom: 20 }}>
-            Esta app guarda tus datos en un archivo, no en un servidor. Si ya tenés una copia descargada, subila acá. Si es tu primera vez, arrancá de cero.
+            A partir de ahora, este navegador guarda tus datos solo — no hace falta cargar ningún archivo cada vez. Si venís de otro dispositivo y tenés una copia guardada, subila acá. Si es tu primera vez, arrancá de cero.
           </p>
           <label style={{ ...addBtn, display: "inline-block", cursor: "pointer", marginBottom: 12 }}>
             Cargar mi copia guardada
@@ -319,9 +345,9 @@ function FinanzasTracker() {
         </div>
       </div>
 
-      {dirty && (
-        <div style={dirtyBanner}>
-          Tenés cambios sin guardar — tocá "Guardar mi copia" antes de cerrar para no perderlos.
+      {autoSaved && (
+        <div style={autoSavedBanner}>
+          ✓ Guardado automáticamente en este navegador
         </div>
       )}
 
@@ -909,8 +935,9 @@ function BackupBar({ config, dailyEntries, monthlyStatus, loans, dirty, onSaved,
 
   return (
     <div className="fx-backupbar" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 24px", background: "var(--card)", borderBottom: "1px solid #DFE6E1", flexWrap: "wrap" }}>
-      <button className="fx-btn" onClick={exportBackup} style={{ ...addBtn, background: dirty ? "var(--red)" : "var(--ink)" }}>
-        {dirty ? "Guardar mi copia (cambios sin guardar)" : "Guardar mi copia"}
+      <span style={{ fontFamily: "Inter, sans-serif", fontSize: 11, color: "var(--ink-soft)" }}>Copia extra (opcional, para otro dispositivo):</span>
+      <button className="fx-btn" onClick={exportBackup} style={backupBtn}>
+        Descargar copia
       </button>
       <label style={{ ...backupBtn, display: "inline-block", cursor: "pointer" }}>
         Cargar copia
@@ -1069,6 +1096,10 @@ const backupBtn = {
 const dirtyBanner = {
   background: "#FBF3E4", color: "var(--gold)", fontFamily: "Inter, sans-serif", fontSize: 13, fontWeight: 600,
   padding: "8px 24px", borderBottom: "1px solid #F0E2C4",
+};
+const autoSavedBanner = {
+  background: "#EAF4EE", color: "var(--green)", fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600,
+  padding: "6px 24px", borderBottom: "1px solid #D7EADD",
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
