@@ -30,6 +30,7 @@ const MESES = [
   "Enero","Febrero","Marzo","Abril","Mayo","Junio",
   "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"
 ];
+const CATEGORIAS = ["Vivienda", "Servicios", "Alimentación", "Transporte", "Salud", "Entretenimiento", "Educación", "Otros"];
 
 function monthKey(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
@@ -49,50 +50,92 @@ function newId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
-const LOCAL_KEY = "finanzas-app-data-v1";
+const LOCAL_KEY = "finanzas-app-data-v2";
+
+// Convierte datos guardados con la estructura vieja (tarjeta/cuenta, ingresos fijos, "loans")
+// a la estructura nueva, para no perder nada de lo que ya cargaste.
+function migrateData(raw) {
+  if (!raw) return null;
+  const isOld = !!raw.config || !!raw.loans;
+  if (!isOld) return raw;
+
+  const out = { fixedExpenses: [], variableExpenses: [], variableIncome: [], dailyEntries: raw.dailyEntries || [], monthlyStatus: {} };
+  const oldConfig = raw.config || { fixedExpenses: [], fixedIncome: [] };
+  const oldStatus = raw.monthlyStatus || {};
+
+  out.fixedExpenses = (oldConfig.fixedExpenses || []).map((i) => ({ id: i.id, name: i.name, amount: i.amount, category: "" }));
+
+  Object.keys(oldStatus).forEach((m) => {
+    out.monthlyStatus[m] = { expensesPaid: oldStatus[m].expensesPaid || [] };
+  });
+
+  (oldConfig.fixedIncome || []).forEach((inc) => {
+    const installments = {};
+    const months = new Set(Object.keys(oldStatus));
+    months.add(monthKey(new Date()));
+    months.forEach((m) => {
+      const paid = (oldStatus[m] && oldStatus[m].incomePaid || []).includes(inc.id);
+      installments[m] = { amount: inc.amount, paid };
+    });
+    out.variableIncome.push({ id: inc.id, name: inc.name, installments });
+  });
+
+  (raw.loans || []).forEach((l) => {
+    out.variableExpenses.push({ id: l.id, name: l.name, category: "", installments: l.installments || {} });
+  });
+
+  return out;
+}
 
 function FinanzasTracker() {
-  const [config, setConfig] = useState({ fixedExpenses: [], fixedIncome: [] });
+  const [fixedExpenses, setFixedExpenses] = useState([]);
+  const [variableExpenses, setVariableExpenses] = useState([]);
+  const [variableIncome, setVariableIncome] = useState([]);
   const [dailyEntries, setDailyEntries] = useState([]);
   const [monthlyStatus, setMonthlyStatus] = useState({});
-  const [loans, setLoans] = useState([]);
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [tab, setTab] = useState("resumen");
+  const [tab, setTab] = useState("diario");
   const [dirty, setDirty] = useState(false);
   const [showWelcome, setShowWelcome] = useState(true);
   const [welcomeMsg, setWelcomeMsg] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [autoSaved, setAutoSaved] = useState(false);
 
-  function loadFromData(data) {
-    if (data.config) setConfig(data.config);
-    if (data.dailyEntries) setDailyEntries(data.dailyEntries);
-    if (data.monthlyStatus) setMonthlyStatus(data.monthlyStatus);
-    if (data.loans) setLoans(data.loans);
+  function loadFromData(rawData) {
+    const data = migrateData(rawData) || {};
+    setFixedExpenses(data.fixedExpenses || []);
+    setVariableExpenses(data.variableExpenses || []);
+    setVariableIncome(data.variableIncome || []);
+    setDailyEntries(data.dailyEntries || []);
+    setMonthlyStatus(data.monthlyStatus || {});
     setDirty(false);
   }
 
-  // Al abrir la app, fijate si ya hay datos guardados en este navegador
   React.useEffect(() => {
     try {
       const raw = localStorage.getItem(LOCAL_KEY);
       if (raw) {
         loadFromData(JSON.parse(raw));
         setShowWelcome(false);
+      } else {
+        const old = localStorage.getItem("finanzas-app-data-v1");
+        if (old) {
+          loadFromData(JSON.parse(old));
+          setShowWelcome(false);
+        }
       }
     } catch (e) {}
     setLoaded(true);
   }, []);
 
-  // Cada vez que algo cambia, se guarda solo en este navegador (no hace falta descargar archivo)
   React.useEffect(() => {
     if (!loaded || showWelcome) return;
     try {
-      const data = { config, dailyEntries, monthlyStatus, loans };
+      const data = { fixedExpenses, variableExpenses, variableIncome, dailyEntries, monthlyStatus };
       localStorage.setItem(LOCAL_KEY, JSON.stringify(data));
       setAutoSaved(true);
     } catch (e) {}
-  }, [config, dailyEntries, monthlyStatus, loans, loaded, showWelcome]);
+  }, [fixedExpenses, variableExpenses, variableIncome, dailyEntries, monthlyStatus, loaded, showWelcome]);
 
   function handleWelcomeFile(e) {
     const file = e.target.files[0];
@@ -112,39 +155,25 @@ function FinanzasTracker() {
   }
 
   const mKey = monthKey(selectedDate);
-  const status = monthlyStatus[mKey] || { expensesPaid: [], incomePaid: [] };
+  const status = monthlyStatus[mKey] || { expensesPaid: [] };
 
   function toggleExpensePaid(id) {
-    const cur = monthlyStatus[mKey] || { expensesPaid: [], incomePaid: [] };
+    const cur = monthlyStatus[mKey] || { expensesPaid: [] };
     const set = new Set(cur.expensesPaid);
     set.has(id) ? set.delete(id) : set.add(id);
-    setMonthlyStatus({ ...monthlyStatus, [mKey]: { ...cur, expensesPaid: [...set] } });
-    setDirty(true);
-  }
-  function toggleIncomeReceived(id) {
-    const cur = monthlyStatus[mKey] || { expensesPaid: [], incomePaid: [] };
-    const set = new Set(cur.incomePaid);
-    set.has(id) ? set.delete(id) : set.add(id);
-    setMonthlyStatus({ ...monthlyStatus, [mKey]: { ...cur, incomePaid: [...set] } });
+    setMonthlyStatus({ ...monthlyStatus, [mKey]: { expensesPaid: [...set] } });
     setDirty(true);
   }
 
   function addFixedExpense(item) {
-    setConfig({ ...config, fixedExpenses: [...config.fixedExpenses, { id: newId(), ...item }] });
-    setDirty(true);
-  }
-  function addFixedIncome(item) {
-    setConfig({ ...config, fixedIncome: [...config.fixedIncome, { id: newId(), ...item }] });
+    setFixedExpenses([...fixedExpenses, { id: newId(), ...item }]);
     setDirty(true);
   }
   function deleteFixedExpense(id) {
-    setConfig({ ...config, fixedExpenses: config.fixedExpenses.filter((i) => i.id !== id) });
+    setFixedExpenses(fixedExpenses.filter((i) => i.id !== id));
     setDirty(true);
   }
-  function deleteFixedIncome(id) {
-    setConfig({ ...config, fixedIncome: config.fixedIncome.filter((i) => i.id !== id) });
-    setDirty(true);
-  }
+
   function addDailyEntry(entry) {
     setDailyEntries([...dailyEntries, { id: newId(), ...entry }]);
     setDirty(true);
@@ -154,45 +183,55 @@ function FinanzasTracker() {
     setDirty(true);
   }
 
-  function addLoan(item) {
-    setLoans([...loans, { id: newId(), name: item.name, method: item.method, installments: {} }]);
+  function variableList(kind) {
+    return kind === "expense" ? variableExpenses : variableIncome;
+  }
+  function setVariableList(kind, list) {
+    if (kind === "expense") setVariableExpenses(list);
+    else setVariableIncome(list);
+  }
+  function addVariableItem(kind, item) {
+    setVariableList(kind, [...variableList(kind), { id: newId(), ...item, installments: {} }]);
     setDirty(true);
   }
-  function deleteLoan(loanId) {
-    setLoans(loans.filter((l) => l.id !== loanId));
+  function deleteVariableItem(kind, id) {
+    setVariableList(kind, variableList(kind).filter((i) => i.id !== id));
     setDirty(true);
   }
-  function addInstallments(loanId, entries) {
-    setLoans(
-      loans.map((l) => {
-        if (l.id !== loanId) return l;
-        const updated = { ...l.installments };
+  function addVariableInstallments(kind, itemId, entries) {
+    setVariableList(
+      kind,
+      variableList(kind).map((it) => {
+        if (it.id !== itemId) return it;
+        const updated = { ...it.installments };
         entries.forEach(({ month, amount }) => {
           updated[month] = { amount, paid: updated[month]?.paid || false };
         });
-        return { ...l, installments: updated };
+        return { ...it, installments: updated };
       })
     );
     setDirty(true);
   }
-  function deleteInstallment(loanId, month) {
-    setLoans(
-      loans.map((l) => {
-        if (l.id !== loanId) return l;
-        const updated = { ...l.installments };
+  function deleteVariableInstallment(kind, itemId, month) {
+    setVariableList(
+      kind,
+      variableList(kind).map((it) => {
+        if (it.id !== itemId) return it;
+        const updated = { ...it.installments };
         delete updated[month];
-        return { ...l, installments: updated };
+        return { ...it, installments: updated };
       })
     );
     setDirty(true);
   }
-  function toggleInstallmentPaid(loanId, month) {
-    setLoans(
-      loans.map((l) => {
-        if (l.id !== loanId) return l;
-        const cur = l.installments[month];
-        if (!cur) return l;
-        return { ...l, installments: { ...l.installments, [month]: { ...cur, paid: !cur.paid } } };
+  function toggleVariableInstallment(kind, itemId, month) {
+    setVariableList(
+      kind,
+      variableList(kind).map((it) => {
+        if (it.id !== itemId) return it;
+        const cur = it.installments[month];
+        if (!cur) return it;
+        return { ...it, installments: { ...it.installments, [month]: { ...cur, paid: !cur.paid } } };
       })
     );
     setDirty(true);
@@ -201,39 +240,27 @@ function FinanzasTracker() {
   const monthDaily = dailyEntries.filter((e) => e.date.slice(0, 7) === mKey);
   const dailyExpenses = monthDaily.filter((e) => e.type === "expense");
   const dailyIncome = monthDaily.filter((e) => e.type === "income");
-
-  const loanRowsThisMonth = loans
-    .map((l) => ({ loanId: l.id, name: l.name, method: l.method, inst: l.installments[mKey] }))
-    .filter((r) => r.inst);
-  const loanExpTotal = loanRowsThisMonth.reduce((s, r) => s + Number(r.inst.amount), 0);
-  const loanExpPaidTotal = loanRowsThisMonth.filter((r) => r.inst.paid).reduce((s, r) => s + Number(r.inst.amount), 0);
-
-  const fixedExpTotal = config.fixedExpenses.reduce((s, i) => s + Number(i.amount), 0) + loanExpTotal;
-  const fixedExpPaidTotal =
-    config.fixedExpenses.filter((i) => status.expensesPaid.includes(i.id)).reduce((s, i) => s + Number(i.amount), 0) +
-    loanExpPaidTotal;
-  const fixedIncTotal = config.fixedIncome.reduce((s, i) => s + Number(i.amount), 0);
-  const fixedIncRecTotal = config.fixedIncome
-    .filter((i) => status.incomePaid.includes(i.id))
-    .reduce((s, i) => s + Number(i.amount), 0);
   const dailyExpTotal = dailyExpenses.reduce((s, i) => s + Number(i.amount), 0);
   const dailyIncTotal = dailyIncome.reduce((s, i) => s + Number(i.amount), 0);
 
-  const balanceActual = fixedIncRecTotal + dailyIncTotal - (fixedExpPaidTotal + dailyExpTotal);
-  const balanceProyectado = fixedIncTotal + dailyIncTotal - (fixedExpTotal + dailyExpTotal);
+  const varExpRows = variableExpenses.map((it) => ({ id: it.id, name: it.name, category: it.category, inst: it.installments[mKey] })).filter((r) => r.inst);
+  const varExpTotal = varExpRows.reduce((s, r) => s + Number(r.inst.amount), 0);
+  const varExpPaidTotal = varExpRows.filter((r) => r.inst.paid).reduce((s, r) => s + Number(r.inst.amount), 0);
 
-  const tarjetaTotal =
-    config.fixedExpenses
-      .filter((i) => status.expensesPaid.includes(i.id) && i.method === "tarjeta")
-      .reduce((s, i) => s + Number(i.amount), 0) +
-    dailyExpenses.filter((e) => e.method === "tarjeta").reduce((s, i) => s + Number(i.amount), 0) +
-    loanRowsThisMonth.filter((r) => r.inst.paid && r.method === "tarjeta").reduce((s, r) => s + Number(r.inst.amount), 0);
-  const cuentaTotal =
-    config.fixedExpenses
-      .filter((i) => status.expensesPaid.includes(i.id) && i.method === "cuenta")
-      .reduce((s, i) => s + Number(i.amount), 0) +
-    dailyExpenses.filter((e) => e.method === "cuenta").reduce((s, i) => s + Number(i.amount), 0) +
-    loanRowsThisMonth.filter((r) => r.inst.paid && r.method === "cuenta").reduce((s, r) => s + Number(r.inst.amount), 0);
+  const varIncRows = variableIncome.map((it) => ({ id: it.id, name: it.name, inst: it.installments[mKey] })).filter((r) => r.inst);
+  const varIncTotal = varIncRows.reduce((s, r) => s + Number(r.inst.amount), 0);
+  const varIncPaidTotal = varIncRows.filter((r) => r.inst.paid).reduce((s, r) => s + Number(r.inst.amount), 0);
+
+  const fixedExpTotal = fixedExpenses.reduce((s, i) => s + Number(i.amount), 0);
+  const fixedExpPaidTotal = fixedExpenses.filter((i) => status.expensesPaid.includes(i.id)).reduce((s, i) => s + Number(i.amount), 0);
+
+  const gastoTotal = fixedExpTotal + varExpTotal + dailyExpTotal;
+  const gastoPagadoTotal = fixedExpPaidTotal + varExpPaidTotal + dailyExpTotal;
+  const ingresoTotal = varIncTotal + dailyIncTotal;
+  const ingresoCobradoTotal = varIncPaidTotal + dailyIncTotal;
+
+  const balanceActual = ingresoCobradoTotal - gastoPagadoTotal;
+  const balanceProyectado = ingresoTotal - gastoTotal;
 
   function changeMonth(delta) {
     const d = new Date(selectedDate);
@@ -251,7 +278,7 @@ function FinanzasTracker() {
             ¡Hola! 🐾
           </div>
           <p style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink-soft)", lineHeight: 1.5, marginBottom: 20 }}>
-            A partir de ahora, este navegador guarda tus datos solo — no hace falta cargar ningún archivo cada vez. Si venís de otro dispositivo y tenés una copia guardada, subila acá. Si es tu primera vez, arrancá de cero.
+            Este navegador guarda tus datos solo. Si venís de otro dispositivo y tenés una copia guardada, subila acá. Si es tu primera vez, arrancá de cero.
           </p>
           <label style={{ ...addBtn, display: "inline-block", cursor: "pointer", marginBottom: 12 }}>
             Cargar mi copia guardada
@@ -272,10 +299,14 @@ function FinanzasTracker() {
     <div style={wrap}>
       <FontImport />
       <div className="fx-catbg" />
+      <datalist id="fx-categorias">
+        {CATEGORIAS.map((c) => <option key={c} value={c} />)}
+      </datalist>
       <style>{`
         * { box-sizing: border-box; }
-        .fx-btn { cursor: pointer; border: none; transition: opacity .15s ease; }
+        .fx-btn { cursor: pointer; border: none; transition: opacity .15s ease, transform .1s ease; }
         .fx-btn:hover { opacity: .85; }
+        .fx-btn:active { transform: scale(0.97); }
         .fx-tab { cursor: pointer; }
         .fx-row:hover .fx-del { opacity: 1; }
         .fx-del { opacity: 0; transition: opacity .15s ease; }
@@ -285,15 +316,15 @@ function FinanzasTracker() {
           .fx-hero { padding: 14px 16px 12px !important; }
           .fx-tabs { padding: 0 16px !important; }
           .fx-body { padding: 16px !important; }
-          .fx-balance { font-size: 22px !important; }
-          .fx-title { font-size: 19px !important; }
+          .fx-balance { font-size: 26px !important; }
+          .fx-title { font-size: 20px !important; }
           .fx-resumen-grid { grid-template-columns: 1fr !important; }
           .fx-form-row { flex-direction: column !important; align-items: stretch !important; }
           .fx-form-row input, .fx-form-row select { width: 100% !important; }
           .fx-stats { gap: 10px 20px !important; margin-top: 10px !important; display: grid !important; grid-template-columns: 1fr 1fr !important; }
-          .fx-cat { width: 34px !important; height: 34px !important; top: 8px !important; right: 12px !important; }
+          .fx-cat { width: 40px !important; height: 40px !important; top: 10px !important; right: 14px !important; }
           .fx-del { opacity: 1; }
-          .fx-balance-block { margin-top: 10px !important; }
+          .fx-balance-block { margin-top: 8px !important; }
           .fx-stamp { padding: 3px 9px !important; font-size: 10px !important; }
           .fx-proyectado { display: none !important; }
         }
@@ -301,9 +332,9 @@ function FinanzasTracker() {
 
       <CatBackground />
 
-      {/* Header / hero */}
+      {/* Header / hero (acá vive el resumen) */}
       <div className="fx-hero" style={hero}>
-        <CatPeek />
+        <CatSilhouette className="fx-cat" size={50} color="var(--accent)" style={{ position: "absolute", top: 16, right: 20 }} />
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
           <div>
             <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink-soft)", marginBottom: 4 }}>
@@ -322,14 +353,14 @@ function FinanzasTracker() {
           </div>
         </div>
 
-        <div className="fx-balance-block" style={{ display: "flex", alignItems: "center", gap: 20, marginTop: 22, flexWrap: "wrap" }}>
+        <div className="fx-balance-block" style={{ display: "flex", alignItems: "center", gap: 20, marginTop: 16, flexWrap: "wrap" }}>
           <div>
             <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)" }}>Saldo real del mes</div>
-            <div className="fx-balance" style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 34, fontWeight: 600, color: balanceActual >= 0 ? "var(--green)" : "var(--red)" }}>
+            <div className="fx-balance" style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 34, fontWeight: 700, color: balanceActual >= 0 ? "var(--green)" : "var(--red)" }}>
               {fmtGs(balanceActual)}
             </div>
             <div className="fx-proyectado" style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)", marginTop: 2 }}>
-              Proyectado si cobrás/pagás todo: {fmtGs(balanceProyectado)}
+              Proyectado: {fmtGs(balanceProyectado)}
             </div>
           </div>
           <div className="fx-stamp" style={stamp(balanceActual >= 0)}>
@@ -337,25 +368,22 @@ function FinanzasTracker() {
           </div>
         </div>
 
-        <div className="fx-stats" style={{ display: "flex", gap: 24, marginTop: 18, flexWrap: "wrap" }}>
-          <MiniStat label="Tarjeta de crédito" value={fmtGs(tarjetaTotal)} color="var(--indigo)" />
-          <MiniStat label="Cuenta / efectivo" value={fmtGs(cuentaTotal)} color="var(--gold)" />
-          <MiniStat label="Ingresos fijos cobrados" value={`${fmtGs(fixedIncRecTotal)} / ${fmtGs(fixedIncTotal)}`} color="var(--green)" />
-          <MiniStat label="Gastos fijos pagados" value={`${fmtGs(fixedExpPaidTotal)} / ${fmtGs(fixedExpTotal)}`} color="var(--red)" />
+        <div className="fx-stats" style={{ display: "flex", gap: 24, marginTop: 14, flexWrap: "wrap" }}>
+          <MiniStat label="Ingresos cobrados" value={`${fmtGs(ingresoCobradoTotal)} / ${fmtGs(ingresoTotal)}`} color="var(--green)" />
+          <MiniStat label="Gastos pagados" value={`${fmtGs(gastoPagadoTotal)} / ${fmtGs(gastoTotal)}`} color="var(--red)" />
         </div>
       </div>
 
       {autoSaved && (
-        <div style={autoSavedBanner}>
-          ✓ Guardado automáticamente en este navegador
-        </div>
+        <div style={autoSavedBanner}>✓ Guardado automáticamente en este navegador</div>
       )}
 
       <BackupBar
-        config={config}
+        fixedExpenses={fixedExpenses}
+        variableExpenses={variableExpenses}
+        variableIncome={variableIncome}
         dailyEntries={dailyEntries}
         monthlyStatus={monthlyStatus}
-        loans={loans}
         dirty={dirty}
         onSaved={() => setDirty(false)}
         onRestore={(data) => loadFromData(data)}
@@ -364,10 +392,9 @@ function FinanzasTracker() {
       {/* Tabs */}
       <div className="fx-tabs" style={tabsBar}>
         {[
-          ["resumen", "Resumen"],
-          ["fijos", "Fijos del mes"],
-          ["prestamos", "Montos variables"],
           ["diario", "Diario"],
+          ["fijos", "Fijos"],
+          ["variables", "Montos variables"],
         ].map(([key, label]) => (
           <div
             key={key}
@@ -376,7 +403,7 @@ function FinanzasTracker() {
             style={{
               ...tabItem,
               color: tab === key ? "var(--ink)" : "var(--ink-soft)",
-              borderBottom: tab === key ? "2px solid var(--ink)" : "2px solid transparent",
+              borderBottom: tab === key ? "2px solid var(--accent)" : "2px solid transparent",
               fontWeight: tab === key ? 600 : 500,
             }}
           >
@@ -386,48 +413,29 @@ function FinanzasTracker() {
       </div>
 
       <div className="fx-body" style={{ padding: "20px 24px 32px", position: "relative" }}>
-        {tab === "resumen" && (
-          <Resumen
-            fixedExpenses={config.fixedExpenses}
-            fixedIncome={config.fixedIncome}
-            status={status}
-            dailyExpenses={dailyExpenses}
-            dailyIncome={dailyIncome}
-            loanRowsThisMonth={loanRowsThisMonth}
-            onToggleLoan={toggleInstallmentPaid}
-            mKey={mKey}
-          />
+        {tab === "diario" && (
+          <Diario entries={monthDaily} onAdd={addDailyEntry} onDelete={deleteDailyEntry} />
         )}
         {tab === "fijos" && (
           <Fijos
-            fixedExpenses={config.fixedExpenses}
-            fixedIncome={config.fixedIncome}
+            fixedExpenses={fixedExpenses}
             status={status}
-            onAddExpense={addFixedExpense}
-            onAddIncome={addFixedIncome}
-            onDeleteExpense={deleteFixedExpense}
-            onDeleteIncome={deleteFixedIncome}
-            onToggleExpense={toggleExpensePaid}
-            onToggleIncome={toggleIncomeReceived}
+            onAdd={addFixedExpense}
+            onDelete={deleteFixedExpense}
+            onToggle={toggleExpensePaid}
           />
         )}
-        {tab === "prestamos" && (
-          <Prestamos
-            loans={loans}
+        {tab === "variables" && (
+          <Variables
+            variableExpenses={variableExpenses}
+            variableIncome={variableIncome}
             mKey={mKey}
             monthLabel={monthLabel(selectedDate)}
-            onAddLoan={addLoan}
-            onDeleteLoan={deleteLoan}
-            onAddInstallments={addInstallments}
-            onDeleteInstallment={deleteInstallment}
-            onToggleInstallment={toggleInstallmentPaid}
-          />
-        )}
-        {tab === "diario" && (
-          <Diario
-            entries={monthDaily}
-            onAdd={addDailyEntry}
-            onDelete={deleteDailyEntry}
+            onAddItem={addVariableItem}
+            onDeleteItem={deleteVariableItem}
+            onAddInstallments={addVariableInstallments}
+            onDeleteInstallment={deleteVariableInstallment}
+            onToggleInstallment={toggleVariableInstallment}
           />
         )}
       </div>
@@ -444,144 +452,55 @@ function MiniStat({ label, value, color }) {
   );
 }
 
-function Resumen({ fixedExpenses, fixedIncome, status, dailyExpenses, dailyIncome, loanRowsThisMonth, onToggleLoan, mKey }) {
-  const pendingExp = fixedExpenses.filter((i) => !status.expensesPaid.includes(i.id));
-  const pendingInc = fixedIncome.filter((i) => !status.incomePaid.includes(i.id));
-  const pendingLoans = (loanRowsThisMonth || []).filter((r) => !r.inst.paid);
+function categoryBadge() {
+  return {
+    fontFamily: "Inter, sans-serif",
+    fontSize: 10,
+    fontWeight: 600,
+    padding: "2px 8px",
+    borderRadius: 999,
+    background: "rgba(232,115,74,0.14)",
+    color: "var(--accent)",
+  };
+}
+
+function Fijos({ fixedExpenses, status, onAdd, onDelete, onToggle }) {
+  const [form, setForm] = useState({ name: "", amount: "", category: "" });
   return (
     <div style={{ display: "grid", gap: 20 }}>
       <div style={card}>
-        <SectionTitle>Pendiente de pagar este mes</SectionTitle>
-        {pendingExp.length === 0 && pendingLoans.length === 0 ? (
-          <Empty>No tenés gastos fijos pendientes. ✓</Empty>
-        ) : (
-          <>
-            {pendingExp.map((i) => (
-              <div key={i.id} style={listRow}>
-                <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)" }}>{i.name}</span>
-                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--red)" }}>{fmtGs(i.amount)}</span>
-              </div>
-            ))}
-            {pendingLoans.map((r) => (
-              <div key={r.loanId} style={listRow}>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                  <input type="checkbox" checked={false} onChange={() => onToggleLoan(r.loanId, mKey)} style={checkbox} />
-                  <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)" }}>{r.name} (cuota)</span>
-                </label>
-                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--red)" }}>{fmtGs(r.inst.amount)}</span>
-              </div>
-            ))}
-          </>
-        )}
-      </div>
-      <div style={card}>
-        <SectionTitle>Pendiente de cobrar este mes</SectionTitle>
-        {pendingInc.length === 0 ? (
-          <Empty>Ya cobraste todos tus ingresos fijos. ✓</Empty>
-        ) : (
-          pendingInc.map((i) => (
-            <div key={i.id} style={listRow}>
-              <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)" }}>{i.name}</span>
-              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--green)" }}>{fmtGs(i.amount)}</span>
-            </div>
-          ))
-        )}
-      </div>
-      <div className="fx-resumen-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-        <div style={card}>
-          <SectionTitle>Gastos diarios del mes</SectionTitle>
-          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 22, color: "var(--red)", fontWeight: 600 }}>
-            {fmtGs(dailyExpenses.reduce((s, i) => s + Number(i.amount), 0))}
-          </div>
-          <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)" }}>{dailyExpenses.length} registros</div>
-        </div>
-        <div style={card}>
-          <SectionTitle>Ingresos diarios / extra</SectionTitle>
-          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 22, color: "var(--green)", fontWeight: 600 }}>
-            {fmtGs(dailyIncome.reduce((s, i) => s + Number(i.amount), 0))}
-          </div>
-          <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)" }}>{dailyIncome.length} registros</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Fijos({ fixedExpenses, fixedIncome, status, onAddExpense, onAddIncome, onDeleteExpense, onDeleteIncome, onToggleExpense, onToggleIncome }) {
-  const [expForm, setExpForm] = useState({ name: "", amount: "", method: "cuenta" });
-  const [incForm, setIncForm] = useState({ name: "", amount: "" });
-
-  return (
-    <div style={{ display: "grid", gap: 28 }}>
-      <div style={card}>
         <SectionTitle>Gastos fijos mensuales</SectionTitle>
+        <p style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: "var(--ink-soft)", marginTop: -4, marginBottom: 12 }}>
+          Para lo que es siempre el mismo monto (ej. alquiler).
+        </p>
         {fixedExpenses.length === 0 && <Empty>Todavía no agregaste ningún gasto fijo.</Empty>}
         {fixedExpenses.map((i) => {
           const paid = status.expensesPaid.includes(i.id);
           return (
             <div key={i.id} className="fx-row" style={listRow}>
               <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", flex: 1 }}>
-                <input type="checkbox" checked={paid} onChange={() => onToggleExpense(i.id)} style={checkbox} />
+                <input type="checkbox" checked={paid} onChange={() => onToggle(i.id)} style={checkbox} />
                 <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)", textDecoration: paid ? "line-through" : "none", opacity: paid ? 0.55 : 1 }}>
                   {i.name}
                 </span>
-                <span style={methodBadge(i.method)}>{i.method === "tarjeta" ? "Tarjeta" : "Cuenta/Efectivo"}</span>
+                {i.category && <span style={categoryBadge()}>{i.category}</span>}
               </label>
               <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--ink)", marginRight: 12 }}>{fmtGs(i.amount)}</span>
-              <button className="fx-btn fx-del" onClick={() => onDeleteExpense(i.id)} style={delBtn}>✕</button>
+              <button className="fx-btn fx-del" onClick={() => onDelete(i.id)} style={delBtn}>✕</button>
             </div>
           );
         })}
         <div className="fx-form-row" style={formRow}>
-          <input placeholder="Nombre (ej. Alquiler)" value={expForm.name} onChange={(e) => setExpForm({ ...expForm, name: e.target.value })} style={{ ...input, flex: 2 }} />
-          <input placeholder="Monto" type="number" value={expForm.amount} onChange={(e) => setExpForm({ ...expForm, amount: e.target.value })} style={{ ...input, flex: 1 }} />
-          <select value={expForm.method} onChange={(e) => setExpForm({ ...expForm, method: e.target.value })} style={{ ...input, flex: 1 }}>
-            <option value="cuenta">Cuenta/Efectivo</option>
-            <option value="tarjeta">Tarjeta</option>
-          </select>
+          <input placeholder="Nombre (ej. Alquiler)" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={{ ...input, flex: 2 }} />
+          <input placeholder="Monto" type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} style={{ ...input, flex: 1 }} />
+          <input list="fx-categorias" placeholder="Categoría (opcional)" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} style={{ ...input, flex: 1 }} />
           <button
             className="fx-btn"
             type="button"
             onClick={() => {
-              if (!expForm.name || !expForm.amount) return;
-              onAddExpense({ name: expForm.name, amount: Number(expForm.amount), method: expForm.method });
-              setExpForm({ name: "", amount: "", method: "cuenta" });
-            }}
-            style={addBtn}
-          >
-            Agregar
-          </button>
-        </div>
-      </div>
-
-      <div style={card}>
-        <SectionTitle>Ingresos fijos mensuales</SectionTitle>
-        {fixedIncome.length === 0 && <Empty>Todavía no agregaste ningún ingreso fijo.</Empty>}
-        {fixedIncome.map((i) => {
-          const received = status.incomePaid.includes(i.id);
-          return (
-            <div key={i.id} className="fx-row" style={listRow}>
-              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", flex: 1 }}>
-                <input type="checkbox" checked={received} onChange={() => onToggleIncome(i.id)} style={checkbox} />
-                <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)", textDecoration: received ? "line-through" : "none", opacity: received ? 0.55 : 1 }}>
-                  {i.name}
-                </span>
-              </label>
-              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--ink)", marginRight: 12 }}>{fmtGs(i.amount)}</span>
-              <button className="fx-btn fx-del" onClick={() => onDeleteIncome(i.id)} style={delBtn}>✕</button>
-            </div>
-          );
-        })}
-        <div className="fx-form-row" style={formRow}>
-          <input placeholder="Nombre (ej. Sueldo)" value={incForm.name} onChange={(e) => setIncForm({ ...incForm, name: e.target.value })} style={{ ...input, flex: 2 }} />
-          <input placeholder="Monto" type="number" value={incForm.amount} onChange={(e) => setIncForm({ ...incForm, amount: e.target.value })} style={{ ...input, flex: 1 }} />
-          <button
-            className="fx-btn"
-            type="button"
-            onClick={() => {
-              if (!incForm.name || !incForm.amount) return;
-              onAddIncome({ name: incForm.name, amount: Number(incForm.amount) });
-              setIncForm({ name: "", amount: "" });
+              if (!form.name || !form.amount) return;
+              onAdd({ name: form.name, amount: Number(form.amount), category: form.category });
+              setForm({ name: "", amount: "", category: "" });
             }}
             style={addBtn}
           >
@@ -593,30 +512,43 @@ function Fijos({ fixedExpenses, fixedIncome, status, onAddExpense, onAddIncome, 
   );
 }
 
-function Prestamos({ loans, mKey, monthLabel, onAddLoan, onDeleteLoan, onAddInstallments, onDeleteInstallment, onToggleInstallment }) {
-  const [loanForm, setLoanForm] = useState({ name: "", method: "cuenta" });
+function Variables({ variableExpenses, variableIncome, mKey, monthLabel, onAddItem, onDeleteItem, onAddInstallments, onDeleteInstallment, onToggleInstallment }) {
+  const [kind, setKind] = useState("expense");
+  const [form, setForm] = useState({ name: "", category: "" });
   const [expandedId, setExpandedId] = useState(null);
+  const items = kind === "expense" ? variableExpenses : variableIncome;
 
   return (
     <div style={{ display: "grid", gap: 20 }}>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="button" onClick={() => setKind("expense")} style={toggleBtn(kind === "expense", "var(--red)")}>Gastos variables</button>
+        <button type="button" onClick={() => setKind("income")} style={toggleBtn(kind === "income", "var(--green)")}>Ingresos variables</button>
+      </div>
+
       <div style={card}>
-        <SectionTitle>Nuevo gasto de monto variable</SectionTitle>
+        <SectionTitle>{kind === "expense" ? "Nuevo gasto de monto variable" : "Nuevo ingreso de monto variable"}</SectionTitle>
         <p style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: "var(--ink-soft)", marginTop: -4, marginBottom: 12 }}>
-          Para tarjeta de crédito, préstamos, o cualquier gasto fijo que cambie de monto cada mes. Cargalo acá y después su cronograma (el monto de cada mes).
+          {kind === "expense"
+            ? "Para tarjeta, servicios, préstamos: cualquier gasto que cambie de monto cada mes."
+            : "Para tu sueldo u otro ingreso mensual que puede variar (comisiones, horas extra, etc.)."}
         </p>
         <div className="fx-form-row" style={formRow}>
-          <input placeholder="Nombre (ej. Tarjeta Visa Continental)" value={loanForm.name} onChange={(e) => setLoanForm({ ...loanForm, name: e.target.value })} style={{ ...input, flex: 2 }} />
-          <select value={loanForm.method} onChange={(e) => setLoanForm({ ...loanForm, method: e.target.value })} style={{ ...input, flex: 1 }}>
-            <option value="cuenta">Cuenta/Efectivo</option>
-            <option value="tarjeta">Tarjeta</option>
-          </select>
+          <input
+            placeholder={kind === "expense" ? "Nombre (ej. ANDE, Tigo)" : "Nombre (ej. Sueldo)"}
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            style={{ ...input, flex: 2 }}
+          />
+          {kind === "expense" && (
+            <input list="fx-categorias" placeholder="Categoría (opcional)" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} style={{ ...input, flex: 1 }} />
+          )}
           <button
             className="fx-btn"
             type="button"
             onClick={() => {
-              if (!loanForm.name) return;
-              onAddLoan(loanForm);
-              setLoanForm({ name: "", method: "cuenta" });
+              if (!form.name) return;
+              onAddItem(kind, { name: form.name, category: kind === "expense" ? form.category : undefined });
+              setForm({ name: "", category: "" });
             }}
             style={addBtn}
           >
@@ -625,40 +557,40 @@ function Prestamos({ loans, mKey, monthLabel, onAddLoan, onDeleteLoan, onAddInst
         </div>
       </div>
 
-      {loans.length === 0 && <Empty>Todavía no cargaste ningún gasto de monto variable.</Empty>}
+      {items.length === 0 && <Empty>Todavía no cargaste {kind === "expense" ? "ningún gasto" : "ningún ingreso"} de monto variable.</Empty>}
 
-      {loans.map((loan) => {
-        const thisMonth = loan.installments[mKey];
-        const expanded = expandedId === loan.id;
-        const monthsSorted = Object.keys(loan.installments).sort();
+      {items.map((it) => {
+        const thisMonth = it.installments[mKey];
+        const expanded = expandedId === it.id;
+        const monthsSorted = Object.keys(it.installments).sort();
         return (
-          <div key={loan.id} style={card}>
+          <div key={it.id} style={card}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontFamily: "'Fraunces', serif", fontSize: 16, fontWeight: 600, color: "var(--ink)" }}>{loan.name}</span>
-                <span style={methodBadge(loan.method)}>{loan.method === "tarjeta" ? "Tarjeta" : "Cuenta/Efectivo"}</span>
+                <span style={{ fontFamily: "'Fraunces', serif", fontSize: 16, fontWeight: 600, color: "var(--ink)" }}>{it.name}</span>
+                {it.category && <span style={categoryBadge()}>{it.category}</span>}
               </div>
-              <button className="fx-btn" onClick={() => onDeleteLoan(loan.id)} style={delBtn}>✕ eliminar</button>
+              <button className="fx-btn" onClick={() => onDeleteItem(kind, it.id)} style={delBtn}>✕ eliminar</button>
             </div>
 
             {thisMonth ? (
               <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "8px 0", borderBottom: "1px solid #EEF1EE" }}>
-                <input type="checkbox" checked={thisMonth.paid} onChange={() => onToggleInstallment(loan.id, mKey)} style={checkbox} />
+                <input type="checkbox" checked={thisMonth.paid} onChange={() => onToggleInstallment(kind, it.id, mKey)} style={checkbox} />
                 <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)", textDecoration: thisMonth.paid ? "line-through" : "none", opacity: thisMonth.paid ? 0.55 : 1, flex: 1 }}>
-                  Cuota de {monthLabel}
+                  {kind === "expense" ? "Cuota" : "Cobro"} de {monthLabel}
                 </span>
                 <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--ink)" }}>{fmtGs(thisMonth.amount)}</span>
               </label>
             ) : (
-              <Empty>No hay cuota cargada para {monthLabel}.</Empty>
+              <Empty>No hay monto cargado para {monthLabel}.</Empty>
             )}
 
             <div
               className="fx-tab"
-              onClick={() => setExpandedId(expanded ? null : loan.id)}
-              style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--indigo)", fontWeight: 600, marginTop: 10, cursor: "pointer" }}
+              onClick={() => setExpandedId(expanded ? null : it.id)}
+              style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--accent)", fontWeight: 600, marginTop: 10, cursor: "pointer" }}
             >
-              {expanded ? "Ocultar cronograma completo ▲" : `Ver / cargar cronograma completo (${monthsSorted.length} cuotas cargadas) ▼`}
+              {expanded ? "Ocultar historial completo ▲" : `Ver / cargar historial completo (${monthsSorted.length} meses cargados) ▼`}
             </div>
 
             {expanded && (
@@ -668,15 +600,15 @@ function Prestamos({ loans, mKey, monthLabel, onAddLoan, onDeleteLoan, onAddInst
                     {monthsSorted.map((m) => (
                       <div key={m} className="fx-row" style={listRow}>
                         <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "var(--ink)" }}>{m}</span>
-                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: loan.installments[m].paid ? "var(--green)" : "var(--ink-soft)" }}>
-                          {fmtGs(loan.installments[m].amount)} {loan.installments[m].paid ? "· pagada" : ""}
+                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: it.installments[m].paid ? "var(--green)" : "var(--ink-soft)" }}>
+                          {fmtGs(it.installments[m].amount)} {it.installments[m].paid ? "· ✓" : ""}
                         </span>
-                        <button className="fx-btn fx-del" onClick={() => onDeleteInstallment(loan.id, m)} style={delBtn}>✕</button>
+                        <button className="fx-btn fx-del" onClick={() => onDeleteInstallment(kind, it.id, m)} style={delBtn}>✕</button>
                       </div>
                     ))}
                   </div>
                 )}
-                <LoanScheduleForm loanId={loan.id} onAddInstallments={onAddInstallments} />
+                <VariableScheduleForm itemId={it.id} kind={kind} onAddInstallments={onAddInstallments} />
               </div>
             )}
           </div>
@@ -686,7 +618,7 @@ function Prestamos({ loans, mKey, monthLabel, onAddLoan, onDeleteLoan, onAddInst
   );
 }
 
-function LoanScheduleForm({ loanId, onAddInstallments }) {
+function VariableScheduleForm({ itemId, kind, onAddInstallments }) {
   const [single, setSingle] = useState({ month: todayISO().slice(0, 7), amount: "" });
   const [bulkText, setBulkText] = useState("");
   const [bulkMsg, setBulkMsg] = useState("");
@@ -694,16 +626,16 @@ function LoanScheduleForm({ loanId, onAddInstallments }) {
   return (
     <div style={{ display: "grid", gap: 14 }}>
       <div>
-        <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)", marginBottom: 6 }}>Agregar una cuota</div>
+        <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)", marginBottom: 6 }}>Agregar un mes</div>
         <div className="fx-form-row" style={formRow}>
           <input type="month" value={single.month} onChange={(e) => setSingle({ ...single, month: e.target.value })} style={{ ...input, flex: 1 }} />
-          <input placeholder="Monto de esa cuota" type="number" value={single.amount} onChange={(e) => setSingle({ ...single, amount: e.target.value })} style={{ ...input, flex: 1 }} />
+          <input placeholder="Monto de ese mes" type="number" value={single.amount} onChange={(e) => setSingle({ ...single, amount: e.target.value })} style={{ ...input, flex: 1 }} />
           <button
             className="fx-btn"
             type="button"
             onClick={() => {
               if (!single.month || !single.amount) return;
-              onAddInstallments(loanId, [{ month: single.month, amount: Number(single.amount) }]);
+              onAddInstallments(kind, itemId, [{ month: single.month, amount: Number(single.amount) }]);
               setSingle({ ...single, amount: "" });
             }}
             style={addBtn}
@@ -715,7 +647,7 @@ function LoanScheduleForm({ loanId, onAddInstallments }) {
 
       <div>
         <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)", marginBottom: 6 }}>
-          O pegá varias de una vez (una por línea: <code>2026-07:350000</code>)
+          O pegá varios de una vez (una por línea: <code>2026-07:350000</code>)
         </div>
         <textarea
           value={bulkText}
@@ -740,9 +672,9 @@ function LoanScheduleForm({ loanId, onAddInstallments }) {
             if (entries.length === 0) {
               setBulkMsg("No se reconoció ninguna línea. Usá el formato AAAA-MM:monto");
             } else {
-              onAddInstallments(loanId, entries);
+              onAddInstallments(kind, itemId, entries);
               setBulkText("");
-              setBulkMsg(`${entries.length} cuota(s) cargada(s) ✓`);
+              setBulkMsg(`${entries.length} mes(es) cargado(s) ✓`);
             }
             setTimeout(() => setBulkMsg(""), 3000);
           }}
@@ -757,7 +689,7 @@ function LoanScheduleForm({ loanId, onAddInstallments }) {
 }
 
 function Diario({ entries, onAdd, onDelete }) {
-  const [form, setForm] = useState({ type: "expense", date: todayISO(), desc: "", amount: "", method: "cuenta" });
+  const [form, setForm] = useState({ type: "expense", date: todayISO(), desc: "", amount: "", category: "" });
   const sorted = [...entries].sort((a, b) => (a.date < b.date ? 1 : -1));
 
   return (
@@ -774,10 +706,7 @@ function Diario({ entries, onAdd, onDelete }) {
             <input placeholder="Descripción" value={form.desc} onChange={(e) => setForm({ ...form, desc: e.target.value })} style={{ ...input, flex: 2 }} />
             <input placeholder="Monto" type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} style={{ ...input, flex: 1 }} />
             {form.type === "expense" && (
-              <select value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value })} style={{ ...input, flex: 1 }}>
-                <option value="cuenta">Cuenta/Efectivo</option>
-                <option value="tarjeta">Tarjeta</option>
-              </select>
+              <input list="fx-categorias" placeholder="Categoría (opcional)" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} style={{ ...input, flex: 1 }} />
             )}
             <button
               className="fx-btn"
@@ -785,9 +714,9 @@ function Diario({ entries, onAdd, onDelete }) {
               onClick={() => {
                 if (!form.desc || !form.amount) return;
                 const entry = { type: form.type, date: form.date, desc: form.desc, amount: Number(form.amount) };
-                if (form.type === "expense") entry.method = form.method;
+                if (form.type === "expense") entry.category = form.category;
                 onAdd(entry);
-                setForm({ ...form, desc: "", amount: "" });
+                setForm({ ...form, desc: "", amount: "", category: "" });
               }}
               style={addBtn}
             >
@@ -802,10 +731,10 @@ function Diario({ entries, onAdd, onDelete }) {
         {sorted.length === 0 && <Empty>Todavía no registraste movimientos este mes.</Empty>}
         {sorted.map((e) => (
           <div key={e.id} className="fx-row" style={listRow}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, flexWrap: "wrap" }}>
               <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "var(--ink-soft)", minWidth: 70 }}>{e.date.slice(8, 10)}/{e.date.slice(5, 7)}</span>
               <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)" }}>{e.desc}</span>
-              {e.type === "expense" && <span style={methodBadge(e.method)}>{e.method === "tarjeta" ? "Tarjeta" : "Cuenta/Efectivo"}</span>}
+              {e.type === "expense" && e.category && <span style={categoryBadge()}>{e.category}</span>}
             </div>
             <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: e.type === "expense" ? "var(--red)" : "var(--green)", marginRight: 12 }}>
               {e.type === "expense" ? "-" : "+"}{fmtGs(e.amount)}
@@ -818,11 +747,78 @@ function Diario({ entries, onAdd, onDelete }) {
   );
 }
 
-function BackupBar({ config, dailyEntries, monthlyStatus, loans, dirty, onSaved, onRestore }) {
+function SectionTitle({ children }) {
+  return (
+    <div style={{ fontFamily: "'Fraunces', serif", fontSize: 17, fontWeight: 600, color: "var(--ink)", marginBottom: 12 }}>
+      {children}
+    </div>
+  );
+}
+function Empty({ children }) {
+  return <div style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: "var(--ink-soft)", padding: "8px 0" }}>{children}</div>;
+}
+function CatBackground() {
+  return (
+    <style>{`
+      .fx-catbg {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        opacity: 1;
+        background-image: url("data:image/svg+xml,${encodeURIComponent(
+          `<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'>
+            <g fill='#16332C' fill-opacity='0.13'>
+              <ellipse cx='60' cy='78' rx='13' ry='10'/>
+              <circle cx='40' cy='58' r='6'/>
+              <circle cx='53' cy='48' r='6'/>
+              <circle cx='67' cy='48' r='6'/>
+              <circle cx='80' cy='58' r='6'/>
+            </g>
+          </svg>`
+        )}");
+        background-repeat: repeat;
+        background-size: 78px 78px;
+      }
+    `}</style>
+  );
+}
+
+// Logo: silueta de gato sentado, un solo color, sin líneas internas
+// Logo: gatito de ojos grandes y traviesos, estilo juguetón (inspirado en tu referencia, dibujo original)
+function CatSilhouette({ size = 50, color = "var(--accent)", className, style }) {
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 100 100" style={{ pointerEvents: "none", ...style }}>
+      {/* orejas */}
+      <path fill={color} d="M18 46 L28 4 L48 34 Z" />
+      <path fill={color} d="M86 44 L78 3 L54 32 Z" />
+      {/* cabeza */}
+      <ellipse cx="50" cy="58" rx="42" ry="38" fill={color} />
+      {/* patitas asomando abajo */}
+      <ellipse cx="30" cy="94" rx="9" ry="7" fill={color} />
+      <ellipse cx="66" cy="96" rx="9" ry="7" fill={color} />
+      {/* ojo izquierdo (grande, blanco con pupila) */}
+      <circle cx="36" cy="54" r="16" fill="#FBEEE4" />
+      <circle cx="31" cy="58" r="6.5" fill="#16332C" />
+      <circle cx="28.5" cy="55.5" r="1.8" fill="#FBEEE4" />
+      {/* ojo derecho (más chico y más arriba, para el gesto pícaro) */}
+      <circle cx="66" cy="46" r="13" fill="#FBEEE4" />
+      <circle cx="70" cy="49" r="5.4" fill="#16332C" />
+      <circle cx="72" cy="47" r="1.5" fill="#FBEEE4" />
+    </svg>
+  );
+}
+
+function FontImport() {
+  return (
+    <style>{`@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');`}</style>
+  );
+}
+
+function BackupBar({ fixedExpenses, variableExpenses, variableIncome, dailyEntries, monthlyStatus, dirty, onSaved, onRestore }) {
   const [msg, setMsg] = useState("");
 
   function exportBackup() {
-    const data = { config, dailyEntries, monthlyStatus, loans, exportedAt: new Date().toISOString() };
+    const data = { fixedExpenses, variableExpenses, variableIncome, dailyEntries, monthlyStatus, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -840,75 +836,68 @@ function BackupBar({ config, dailyEntries, monthlyStatus, loans, dirty, onSaved,
   function exportExcel() {
     const wb = XLSX.utils.book_new();
 
-    const wsExpenses = XLSX.utils.json_to_sheet(
-      config.fixedExpenses.map((i) => ({ Nombre: i.name, Monto: i.amount, "Método de pago": i.method === "tarjeta" ? "Tarjeta" : "Cuenta/Efectivo" }))
-    );
-    XLSX.utils.book_append_sheet(wb, wsExpenses, "Gastos fijos");
+    const wsFixed = XLSX.utils.json_to_sheet(fixedExpenses.map((i) => ({ Nombre: i.name, Categoría: i.category || "", Monto: i.amount })));
+    XLSX.utils.book_append_sheet(wb, wsFixed, "Gastos fijos");
 
-    const wsIncome = XLSX.utils.json_to_sheet(config.fixedIncome.map((i) => ({ Nombre: i.name, Monto: i.amount })));
-    XLSX.utils.book_append_sheet(wb, wsIncome, "Ingresos fijos");
-
-    const loanRows = [];
-    loans.forEach((l) => {
-      Object.keys(l.installments)
-        .sort()
-        .forEach((m) => {
-          const inst = l.installments[m];
-          loanRows.push({
-            Concepto: l.name,
-            Mes: m,
-            Monto: inst.amount,
-            "Método de pago": l.method === "tarjeta" ? "Tarjeta" : "Cuenta/Efectivo",
-            Pagada: inst.paid ? "Sí" : "No",
-          });
-        });
+    const varExpRows = [];
+    variableExpenses.forEach((it) => {
+      Object.keys(it.installments).sort().forEach((m) => {
+        const inst = it.installments[m];
+        varExpRows.push({ Nombre: it.name, Categoría: it.category || "", Mes: m, Monto: inst.amount, Pagado: inst.paid ? "Sí" : "No" });
+      });
     });
-    const wsLoans = XLSX.utils.json_to_sheet(loanRows);
-    XLSX.utils.book_append_sheet(wb, wsLoans, "Montos variables");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(varExpRows), "Gastos variables");
+
+    const varIncRows = [];
+    variableIncome.forEach((it) => {
+      Object.keys(it.installments).sort().forEach((m) => {
+        const inst = it.installments[m];
+        varIncRows.push({ Nombre: it.name, Mes: m, Monto: inst.amount, Cobrado: inst.paid ? "Sí" : "No" });
+      });
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(varIncRows), "Ingresos variables");
 
     const wsDaily = XLSX.utils.json_to_sheet(
-      [...dailyEntries]
-        .sort((a, b) => (a.date < b.date ? -1 : 1))
-        .map((e) => ({
-          Fecha: e.date,
-          Tipo: e.type === "expense" ? "Gasto" : "Ingreso",
-          Descripción: e.desc,
-          Monto: e.amount,
-          "Método de pago": e.type === "expense" ? (e.method === "tarjeta" ? "Tarjeta" : "Cuenta/Efectivo") : "",
-        }))
+      [...dailyEntries].sort((a, b) => (a.date < b.date ? -1 : 1)).map((e) => ({
+        Fecha: e.date,
+        Tipo: e.type === "expense" ? "Gasto" : "Ingreso",
+        Descripción: e.desc,
+        Categoría: e.category || "",
+        Monto: e.amount,
+      }))
     );
     XLSX.utils.book_append_sheet(wb, wsDaily, "Diario");
 
-    // Resumen por mes: junta todos los meses que aparecen en algún lado
     const months = new Set();
     Object.keys(monthlyStatus).forEach((m) => months.add(m));
     dailyEntries.forEach((e) => months.add(e.date.slice(0, 7)));
-    loans.forEach((l) => Object.keys(l.installments).forEach((m) => months.add(m)));
+    variableExpenses.forEach((it) => Object.keys(it.installments).forEach((m) => months.add(m)));
+    variableIncome.forEach((it) => Object.keys(it.installments).forEach((m) => months.add(m)));
 
     const resumenRows = [...months].sort().map((m) => {
-      const st = monthlyStatus[m] || { expensesPaid: [], incomePaid: [] };
-      const loanInst = loans.map((l) => l.installments[m]).filter(Boolean);
-      const fixedExpTotal = config.fixedExpenses.reduce((s, i) => s + Number(i.amount), 0) + loanInst.reduce((s, i) => s + Number(i.amount), 0);
-      const fixedExpPaid =
-        config.fixedExpenses.filter((i) => st.expensesPaid.includes(i.id)).reduce((s, i) => s + Number(i.amount), 0) +
-        loanInst.filter((i) => i.paid).reduce((s, i) => s + Number(i.amount), 0);
-      const fixedIncTotal = config.fixedIncome.reduce((s, i) => s + Number(i.amount), 0);
-      const fixedIncPaid = config.fixedIncome.filter((i) => st.incomePaid.includes(i.id)).reduce((s, i) => s + Number(i.amount), 0);
+      const st = monthlyStatus[m] || { expensesPaid: [] };
+      const varExp = variableExpenses.map((it) => it.installments[m]).filter(Boolean);
+      const varInc = variableIncome.map((it) => it.installments[m]).filter(Boolean);
+      const fixedTotal = fixedExpenses.reduce((s, i) => s + Number(i.amount), 0);
+      const fixedPaid = fixedExpenses.filter((i) => st.expensesPaid.includes(i.id)).reduce((s, i) => s + Number(i.amount), 0);
+      const varExpTotal = varExp.reduce((s, i) => s + Number(i.amount), 0);
+      const varExpPaid = varExp.filter((i) => i.paid).reduce((s, i) => s + Number(i.amount), 0);
+      const varIncTotal = varInc.reduce((s, i) => s + Number(i.amount), 0);
+      const varIncPaid = varInc.filter((i) => i.paid).reduce((s, i) => s + Number(i.amount), 0);
       const monthDaily = dailyEntries.filter((e) => e.date.slice(0, 7) === m);
       const dailyExp = monthDaily.filter((e) => e.type === "expense").reduce((s, e) => s + Number(e.amount), 0);
       const dailyInc = monthDaily.filter((e) => e.type === "income").reduce((s, e) => s + Number(e.amount), 0);
       return {
         Mes: m,
-        "Ingresos cobrados": fixedIncPaid + dailyInc,
-        "Ingresos proyectados": fixedIncTotal + dailyInc,
-        "Gastos pagados": fixedExpPaid + dailyExp,
-        "Gastos proyectados": fixedExpTotal + dailyExp,
-        "Saldo real": fixedIncPaid + dailyInc - (fixedExpPaid + dailyExp),
-        "Saldo proyectado": fixedIncTotal + dailyInc - (fixedExpTotal + dailyExp),
+        "Ingresos cobrados": varIncPaid + dailyInc,
+        "Ingresos proyectados": varIncTotal + dailyInc,
+        "Gastos pagados": fixedPaid + varExpPaid + dailyExp,
+        "Gastos proyectados": fixedTotal + varExpTotal + dailyExp,
+        "Saldo real": varIncPaid + dailyInc - (fixedPaid + varExpPaid + dailyExp),
+        "Saldo proyectado": varIncTotal + dailyInc - (fixedTotal + varExpTotal + dailyExp),
       };
     });
-    const wsResumen = XLSX.utils.json_to_sheet(resumenRows);
-    XLSX.utils.book_append_sheet(wb, wsResumen, "Resumen por mes");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumenRows), "Resumen por mes");
 
     XLSX.writeFile(wb, `finanzas-${todayISO()}.xlsx`);
     setMsg("Excel descargado ✓ — buscalo en tu carpeta de Descargas");
@@ -936,109 +925,37 @@ function BackupBar({ config, dailyEntries, monthlyStatus, loans, dirty, onSaved,
   return (
     <div className="fx-backupbar" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 24px", background: "var(--card)", borderBottom: "1px solid #DFE6E1", flexWrap: "wrap" }}>
       <span style={{ fontFamily: "Inter, sans-serif", fontSize: 11, color: "var(--ink-soft)" }}>Copia extra (opcional, para otro dispositivo):</span>
-      <button className="fx-btn" onClick={exportBackup} style={backupBtn}>
-        Descargar copia
-      </button>
+      <button className="fx-btn" onClick={exportBackup} style={backupBtn}>Descargar copia</button>
       <label style={{ ...backupBtn, display: "inline-block", cursor: "pointer" }}>
         Cargar copia
         <input type="file" accept="application/json" onChange={importBackup} style={{ display: "none" }} />
       </label>
-      <button className="fx-btn" onClick={exportExcel} style={backupBtn}>
-        Exportar a Excel
-      </button>
+      <button className="fx-btn" onClick={exportExcel} style={backupBtn}>Exportar a Excel</button>
       {msg && <span style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--green)" }}>{msg}</span>}
     </div>
   );
 }
 
-function SectionTitle({ children }) {
-  return (
-    <div style={{ fontFamily: "'Fraunces', serif", fontSize: 17, fontWeight: 600, color: "var(--ink)", marginBottom: 12 }}>
-      {children}
-    </div>
-  );
-}
-function Empty({ children }) {
-  return <div style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: "var(--ink-soft)", padding: "8px 0" }}>{children}</div>;
-}
-function CatBackground() {
-  return (
-    <style>{`
-      .fx-catbg {
-        position: absolute;
-        inset: 0;
-        pointer-events: none;
-        opacity: 1;
-        background-image: url("data:image/svg+xml,${encodeURIComponent(
-          `<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'>
-            <g fill='#1B3A34' fill-opacity='0.13'>
-              <ellipse cx='60' cy='78' rx='13' ry='10'/>
-              <circle cx='40' cy='58' r='6'/>
-              <circle cx='53' cy='48' r='6'/>
-              <circle cx='67' cy='48' r='6'/>
-              <circle cx='80' cy='58' r='6'/>
-            </g>
-          </svg>`
-        )}");
-        background-repeat: repeat;
-        background-size: 78px 78px;
-      }
-    `}</style>
-  );
-}
-
-function CatPeek() {
-  return (
-    <svg
-      className="fx-cat"
-      width="58"
-      height="58"
-      viewBox="0 0 58 58"
-      style={{ position: "absolute", top: 14, right: 18, pointerEvents: "none" }}
-    >
-      <g>
-        <path d="M12 30 L18 12 L26 24 Z" fill="#E7A9B6" />
-        <path d="M46 30 L40 12 L32 24 Z" fill="#E7A9B6" />
-        <path d="M14 32 L20 15 L27 26 Z" fill="#F6D9DF" />
-        <path d="M44 32 L38 15 L31 26 Z" fill="#F6D9DF" />
-        <circle cx="29" cy="34" r="18" fill="#F6D9DF" stroke="#1B3A34" strokeOpacity="0.12" strokeWidth="1" />
-        <circle cx="22" cy="32" r="2.4" fill="#1B3A34" />
-        <circle cx="36" cy="32" r="2.4" fill="#1B3A34" />
-        <path d="M29 37 q-2 3 -4 0" stroke="#1B3A34" strokeWidth="1.4" fill="none" strokeLinecap="round" />
-        <path d="M29 37 q2 3 4 0" stroke="#1B3A34" strokeWidth="1.4" fill="none" strokeLinecap="round" />
-        <ellipse cx="29" cy="38.5" rx="2" ry="1.4" fill="#C97F8F" />
-        <path d="M13 39 L4 37 M13 41 L4 42 M45 39 L54 37 M45 41 L54 42" stroke="#1B3A34" strokeOpacity="0.35" strokeWidth="1" strokeLinecap="round" />
-      </g>
-    </svg>
-  );
-}
-
-function FontImport() {
-  return (
-    <style>{`@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');`}</style>
-  );
-}
-
 /* ---- style tokens ---- */
 const wrap = {
-  "--ink": "#1B3A34",
+  "--ink": "#16332C",
   "--ink-soft": "#5C7570",
   "--paper": "#EFF3F0",
-  "--card": "#FBFCFA",
-  "--green": "#2F7D51",
-  "--red": "#B23A48",
+  "--card": "#FFFFFF",
+  "--green": "#1E9E68",
+  "--red": "#D2494B",
   "--gold": "#B4832E",
-  "--indigo": "#4C4FBF",
-  background: "var(--paper)",
+  "--accent": "#E8734A",
+  background: "linear-gradient(160deg, #EAF4EE 0%, #FBEEE4 100%)",
   minHeight: "100%",
-  borderRadius: 16,
+  borderRadius: 18,
   overflow: "hidden",
   border: "1px solid #DFE6E1",
   position: "relative",
 };
 const hero = {
-  background: "linear-gradient(180deg, #FBFCFA 0%, #EFF3F0 100%)",
-  padding: "24px 24px 20px",
+  background: "linear-gradient(180deg, #FFFFFF 0%, #F3F7F2 100%)",
+  padding: "22px 24px 18px",
   borderBottom: "1px solid #DFE6E1",
   position: "relative",
 };
@@ -1061,26 +978,15 @@ function stamp(positive) {
 }
 const tabsBar = { display: "flex", gap: 4, padding: "0 24px", background: "var(--card)", borderBottom: "1px solid #DFE6E1" };
 const tabItem = { padding: "14px 10px", fontFamily: "Inter, sans-serif", fontSize: 14, cursor: "pointer" };
-const card = { background: "var(--card)", border: "1px solid #E3E9E5", borderRadius: 12, padding: 18 };
+const card = { background: "var(--card)", border: "1px solid #E3E9E5", borderRadius: 16, padding: 18, boxShadow: "0 2px 10px rgba(22,51,44,0.06)" };
 const listRow = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid #EEF1EE" };
-const checkbox = { width: 17, height: 17, accentColor: "#2F7D51" };
-function methodBadge(method) {
-  return {
-    fontFamily: "Inter, sans-serif",
-    fontSize: 10,
-    fontWeight: 600,
-    padding: "2px 8px",
-    borderRadius: 999,
-    background: method === "tarjeta" ? "rgba(76,79,191,0.12)" : "rgba(180,131,46,0.14)",
-    color: method === "tarjeta" ? "var(--indigo)" : "var(--gold)",
-  };
-}
+const checkbox = { width: 17, height: 17, accentColor: "#1E9E68" };
 const formRow = { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" };
 const input = {
   padding: "9px 10px", borderRadius: 8, border: "1px solid #D8E0DB", fontSize: 13, minWidth: 90,
   background: "#fff", color: "var(--ink)",
 };
-const addBtn = { padding: "9px 16px", borderRadius: 8, background: "var(--ink)", color: "#fff", fontFamily: "Inter, sans-serif", fontSize: 13, fontWeight: 600 };
+const addBtn = { padding: "9px 18px", borderRadius: 999, background: "linear-gradient(135deg, #16332C, #234E44)", color: "#fff", fontFamily: "Inter, sans-serif", fontSize: 13, fontWeight: 600 };
 const delBtn = { background: "transparent", color: "var(--red)", fontSize: 13, padding: "2px 6px" };
 function toggleBtn(active, color) {
   return {
@@ -1090,12 +996,8 @@ function toggleBtn(active, color) {
   };
 }
 const backupBtn = {
-  padding: "6px 12px", borderRadius: 8, background: "#fff", border: "1px solid #D8E0DB",
+  padding: "6px 12px", borderRadius: 999, background: "#fff", border: "1px solid #D8E0DB",
   color: "var(--ink)", fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600,
-};
-const dirtyBanner = {
-  background: "#FBF3E4", color: "var(--gold)", fontFamily: "Inter, sans-serif", fontSize: 13, fontWeight: 600,
-  padding: "8px 24px", borderBottom: "1px solid #F0E2C4",
 };
 const autoSavedBanner = {
   background: "#EAF4EE", color: "var(--green)", fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600,
