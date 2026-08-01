@@ -91,6 +91,7 @@ function FinanzasTracker() {
   const [variableExpenses, setVariableExpenses] = useState([]);
   const [variableIncome, setVariableIncome] = useState([]);
   const [dailyEntries, setDailyEntries] = useState([]);
+  const [openingBalance, setOpeningBalance] = useState(0);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [tab, setTab] = useState("diario");
   const [dirty, setDirty] = useState(false);
@@ -98,6 +99,7 @@ function FinanzasTracker() {
   const [welcomeMsg, setWelcomeMsg] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [autoSaved, setAutoSaved] = useState(false);
+  const [editingOpening, setEditingOpening] = useState(false);
 
   function loadFromData(rawData) {
     const data = migrateData(rawData) || {};
@@ -116,14 +118,20 @@ function FinanzasTracker() {
     setVariableExpenses(ve);
     setVariableIncome(data.variableIncome || []);
     setDailyEntries(data.dailyEntries || []);
+    setOpeningBalance(Number(data.openingBalance) || 0);
     setDirty(false);
   }
+
+  const lastKnownUpdatedAt = React.useRef(0);
+  const [conflict, setConflict] = useState(false);
 
   React.useEffect(() => {
     try {
       const raw = localStorage.getItem(LOCAL_KEY);
       if (raw) {
-        loadFromData(JSON.parse(raw));
+        const parsed = JSON.parse(raw);
+        loadFromData(parsed);
+        lastKnownUpdatedAt.current = parsed.updatedAt || 0;
         setShowWelcome(false);
       } else {
         const old = localStorage.getItem("finanzas-app-data-v1");
@@ -139,11 +147,22 @@ function FinanzasTracker() {
   React.useEffect(() => {
     if (!loaded || showWelcome) return;
     try {
-      const data = { variableExpenses, variableIncome, dailyEntries };
+      // Antes de guardar, fijate si desde otra pestaña/ícono ya se guardó algo más nuevo.
+      // Si es así, NO sobrescribas — avisá, para no perder esos datos más recientes.
+      const existingRaw = localStorage.getItem(LOCAL_KEY);
+      const existing = existingRaw ? JSON.parse(existingRaw) : null;
+      if (existing && (existing.updatedAt || 0) > lastKnownUpdatedAt.current) {
+        setConflict(true);
+        return;
+      }
+      const updatedAt = Date.now();
+      const data = { variableExpenses, variableIncome, dailyEntries, openingBalance, updatedAt };
       localStorage.setItem(LOCAL_KEY, JSON.stringify(data));
+      lastKnownUpdatedAt.current = updatedAt;
       setAutoSaved(true);
+      setConflict(false);
     } catch (e) {}
-  }, [variableExpenses, variableIncome, dailyEntries, loaded, showWelcome]);
+  }, [variableExpenses, variableIncome, dailyEntries, openingBalance, loaded, showWelcome]);
 
   function handleWelcomeFile(e) {
     const file = e.target.files[0];
@@ -278,7 +297,7 @@ function FinanzasTracker() {
   variableIncome.forEach((it) => Object.keys(it.installments).forEach((m) => allMonthsWithData.add(m)));
   dailyEntries.forEach((e) => allMonthsWithData.add(e.date.slice(0, 7)));
   const earliestKey = allMonthsWithData.size ? [...allMonthsWithData].sort()[0] : mKey;
-  const saldoAcumulado = monthsBetween(earliestKey, mKey).reduce((sum, m) => sum + computeMonthBalance(m), 0);
+  const saldoAcumulado = openingBalance + monthsBetween(earliestKey, mKey).reduce((sum, m) => sum + computeMonthBalance(m), 0);
 
   const realNowKey = monthKey(new Date());
   const overdueItems = [];
@@ -382,10 +401,41 @@ function FinanzasTracker() {
 
         <div className="fx-balance-block" style={{ display: "flex", alignItems: "center", gap: 20, marginTop: 16, flexWrap: "wrap" }}>
           <div>
-            <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)" }}>Saldo acumulado</div>
-            <div className="fx-balance" style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 34, fontWeight: 700, color: saldoAcumulado >= 0 ? "var(--green)" : "var(--red)" }}>
-              {fmtGs(saldoAcumulado)}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)" }}>Saldo acumulado</div>
+              <button
+                className="fx-btn"
+                onClick={() => setEditingOpening(!editingOpening)}
+                style={{ background: "none", border: "none", padding: 0, fontFamily: "Inter, sans-serif", fontSize: 11, color: "var(--accent)", fontWeight: 600, textDecoration: "underline" }}
+              >
+                ajustar
+              </button>
             </div>
+            {editingOpening ? (
+              <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
+                <input
+                  type="number"
+                  defaultValue={openingBalance}
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setOpeningBalance(Number(e.target.value) || 0);
+                      setEditingOpening(false);
+                    }
+                  }}
+                  onBlur={(e) => {
+                    setOpeningBalance(Number(e.target.value) || 0);
+                    setEditingOpening(false);
+                  }}
+                  style={{ ...input, width: 160, fontFamily: "'IBM Plex Mono', monospace" }}
+                />
+                <span style={{ fontFamily: "Inter, sans-serif", fontSize: 11, color: "var(--ink-soft)" }}>tu saldo real de referencia</span>
+              </div>
+            ) : (
+              <div className="fx-balance" style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 34, fontWeight: 700, color: saldoAcumulado >= 0 ? "var(--green)" : "var(--red)" }}>
+                {fmtGs(saldoAcumulado)}
+              </div>
+            )}
             <div className="fx-proyectado" style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)", marginTop: 2 }}>
               Este mes: {balanceActual >= 0 ? "+" : ""}{fmtGs(balanceActual)} · Proyectado del mes: {fmtGs(balanceProyectado)}
             </div>
@@ -401,7 +451,16 @@ function FinanzasTracker() {
         </div>
       </div>
 
-      {autoSaved && (
+      {conflict && (
+        <div style={conflictBanner}>
+          ⚠ Hay cambios más nuevos guardados desde otra pestaña o ícono. Para no perder nada, no se guardó lo último que hiciste acá.
+          <button className="fx-btn" onClick={() => window.location.reload()} style={{ ...backupBtn, marginLeft: 10, background: "#fff" }}>
+            Recargar y traer lo más nuevo
+          </button>
+        </div>
+      )}
+
+      {!conflict && autoSaved && (
         <div style={autoSavedBanner}>✓ Guardado automáticamente en este navegador</div>
       )}
 
@@ -415,6 +474,7 @@ function FinanzasTracker() {
         variableExpenses={variableExpenses}
         variableIncome={variableIncome}
         dailyEntries={dailyEntries}
+        openingBalance={openingBalance}
         dirty={dirty}
         onSaved={() => setDirty(false)}
         onRestore={(data) => loadFromData(data)}
@@ -841,11 +901,11 @@ function FontImport() {
   );
 }
 
-function BackupBar({ variableExpenses, variableIncome, dailyEntries, dirty, onSaved, onRestore }) {
+function BackupBar({ variableExpenses, variableIncome, dailyEntries, openingBalance, dirty, onSaved, onRestore }) {
   const [msg, setMsg] = useState("");
 
   function exportBackup() {
-    const data = { variableExpenses, variableIncome, dailyEntries, exportedAt: new Date().toISOString() };
+    const data = { variableExpenses, variableIncome, dailyEntries, openingBalance, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1022,6 +1082,10 @@ const backupBtn = {
 const autoSavedBanner = {
   background: "#EAF4EE", color: "var(--green)", fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600,
   padding: "6px 24px", borderBottom: "1px solid #D7EADD",
+};
+const conflictBanner = {
+  background: "#D2494B", color: "#fff", fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 700,
+  padding: "10px 24px", borderBottom: "1px solid #B93D3F", display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6,
 };
 const overdueBanner = {
   background: "#FBEAEA", color: "var(--red)", fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 700,
