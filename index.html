@@ -88,11 +88,9 @@ function migrateData(raw) {
 }
 
 function FinanzasTracker() {
-  const [fixedExpenses, setFixedExpenses] = useState([]);
   const [variableExpenses, setVariableExpenses] = useState([]);
   const [variableIncome, setVariableIncome] = useState([]);
   const [dailyEntries, setDailyEntries] = useState([]);
-  const [monthlyStatus, setMonthlyStatus] = useState({});
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [tab, setTab] = useState("diario");
   const [dirty, setDirty] = useState(false);
@@ -103,11 +101,21 @@ function FinanzasTracker() {
 
   function loadFromData(rawData) {
     const data = migrateData(rawData) || {};
-    setFixedExpenses(data.fixedExpenses || []);
-    setVariableExpenses(data.variableExpenses || []);
+    let ve = data.variableExpenses || [];
+    // La pestaña "Fijos" de monto siempre igual ya no existe: lo que hubiera ahí
+    // se convierte en un gasto fijo con cronograma, con el mes actual ya cargado.
+    const oldFixed = data.fixedExpenses || [];
+    if (oldFixed.length > 0) {
+      const nowKey = monthKey(new Date());
+      const existingIds = new Set(ve.map((v) => v.id));
+      oldFixed.forEach((fe) => {
+        if (existingIds.has(fe.id)) return;
+        ve = [...ve, { id: fe.id, name: fe.name, category: fe.category || "", installments: { [nowKey]: { amount: fe.amount, paid: false } } }];
+      });
+    }
+    setVariableExpenses(ve);
     setVariableIncome(data.variableIncome || []);
     setDailyEntries(data.dailyEntries || []);
-    setMonthlyStatus(data.monthlyStatus || {});
     setDirty(false);
   }
 
@@ -131,11 +139,11 @@ function FinanzasTracker() {
   React.useEffect(() => {
     if (!loaded || showWelcome) return;
     try {
-      const data = { fixedExpenses, variableExpenses, variableIncome, dailyEntries, monthlyStatus };
+      const data = { variableExpenses, variableIncome, dailyEntries };
       localStorage.setItem(LOCAL_KEY, JSON.stringify(data));
       setAutoSaved(true);
     } catch (e) {}
-  }, [fixedExpenses, variableExpenses, variableIncome, dailyEntries, monthlyStatus, loaded, showWelcome]);
+  }, [variableExpenses, variableIncome, dailyEntries, loaded, showWelcome]);
 
   function handleWelcomeFile(e) {
     const file = e.target.files[0];
@@ -155,24 +163,6 @@ function FinanzasTracker() {
   }
 
   const mKey = monthKey(selectedDate);
-  const status = monthlyStatus[mKey] || { expensesPaid: [] };
-
-  function toggleExpensePaid(id) {
-    const cur = monthlyStatus[mKey] || { expensesPaid: [] };
-    const set = new Set(cur.expensesPaid);
-    set.has(id) ? set.delete(id) : set.add(id);
-    setMonthlyStatus({ ...monthlyStatus, [mKey]: { expensesPaid: [...set] } });
-    setDirty(true);
-  }
-
-  function addFixedExpense(item) {
-    setFixedExpenses([...fixedExpenses, { id: newId(), ...item }]);
-    setDirty(true);
-  }
-  function deleteFixedExpense(id) {
-    setFixedExpenses(fixedExpenses.filter((i) => i.id !== id));
-    setDirty(true);
-  }
 
   function addDailyEntry(entry) {
     setDailyEntries([...dailyEntries, { id: newId(), ...entry }]);
@@ -251,16 +241,22 @@ function FinanzasTracker() {
   const varIncTotal = varIncRows.reduce((s, r) => s + Number(r.inst.amount), 0);
   const varIncPaidTotal = varIncRows.filter((r) => r.inst.paid).reduce((s, r) => s + Number(r.inst.amount), 0);
 
-  const fixedExpTotal = fixedExpenses.reduce((s, i) => s + Number(i.amount), 0);
-  const fixedExpPaidTotal = fixedExpenses.filter((i) => status.expensesPaid.includes(i.id)).reduce((s, i) => s + Number(i.amount), 0);
-
-  const gastoTotal = fixedExpTotal + varExpTotal + dailyExpTotal;
-  const gastoPagadoTotal = fixedExpPaidTotal + varExpPaidTotal + dailyExpTotal;
+  const gastoTotal = varExpTotal + dailyExpTotal;
+  const gastoPagadoTotal = varExpPaidTotal + dailyExpTotal;
   const ingresoTotal = varIncTotal + dailyIncTotal;
   const ingresoCobradoTotal = varIncPaidTotal + dailyIncTotal;
 
   const balanceActual = ingresoCobradoTotal - gastoPagadoTotal;
   const balanceProyectado = ingresoTotal - gastoTotal;
+
+  const realNowKey = monthKey(new Date());
+  const overdueItems = [];
+  variableExpenses.forEach((it) => {
+    Object.keys(it.installments).forEach((m) => {
+      const inst = it.installments[m];
+      if (!inst.paid && m < realNowKey) overdueItems.push({ name: it.name, month: m, amount: inst.amount });
+    });
+  });
 
   function changeMonth(delta) {
     const d = new Date(selectedDate);
@@ -378,12 +374,16 @@ function FinanzasTracker() {
         <div style={autoSavedBanner}>✓ Guardado automáticamente en este navegador</div>
       )}
 
+      {overdueItems.length > 0 && (
+        <div style={overdueBanner}>
+          ⚠ Tenés {overdueItems.length} cuota{overdueItems.length > 1 ? "s" : ""} vencida{overdueItems.length > 1 ? "s" : ""} sin pagar — revisá "Gastos fijos"
+        </div>
+      )}
+
       <BackupBar
-        fixedExpenses={fixedExpenses}
         variableExpenses={variableExpenses}
         variableIncome={variableIncome}
         dailyEntries={dailyEntries}
-        monthlyStatus={monthlyStatus}
         dirty={dirty}
         onSaved={() => setDirty(false)}
         onRestore={(data) => loadFromData(data)}
@@ -393,8 +393,8 @@ function FinanzasTracker() {
       <div className="fx-tabs" style={tabsBar}>
         {[
           ["diario", "Diario"],
-          ["fijos", "Fijos"],
-          ["variables", "Montos variables"],
+          ["gastos-fijos", "Gastos fijos"],
+          ["ingresos-fijos", "Ingresos fijos"],
         ].map(([key, label]) => (
           <div
             key={key}
@@ -416,20 +416,26 @@ function FinanzasTracker() {
         {tab === "diario" && (
           <Diario entries={monthDaily} onAdd={addDailyEntry} onDelete={deleteDailyEntry} />
         )}
-        {tab === "fijos" && (
-          <Fijos
-            fixedExpenses={fixedExpenses}
-            status={status}
-            onAdd={addFixedExpense}
-            onDelete={deleteFixedExpense}
-            onToggle={toggleExpensePaid}
+        {tab === "gastos-fijos" && (
+          <Variables
+            kind="expense"
+            items={variableExpenses}
+            mKey={mKey}
+            realNowKey={realNowKey}
+            monthLabel={monthLabel(selectedDate)}
+            onAddItem={addVariableItem}
+            onDeleteItem={deleteVariableItem}
+            onAddInstallments={addVariableInstallments}
+            onDeleteInstallment={deleteVariableInstallment}
+            onToggleInstallment={toggleVariableInstallment}
           />
         )}
-        {tab === "variables" && (
+        {tab === "ingresos-fijos" && (
           <Variables
-            variableExpenses={variableExpenses}
-            variableIncome={variableIncome}
+            kind="income"
+            items={variableIncome}
             mKey={mKey}
+            realNowKey={realNowKey}
             monthLabel={monthLabel(selectedDate)}
             onAddItem={addVariableItem}
             onDeleteItem={deleteVariableItem}
@@ -464,77 +470,22 @@ function categoryBadge() {
   };
 }
 
-function Fijos({ fixedExpenses, status, onAdd, onDelete, onToggle }) {
-  const [form, setForm] = useState({ name: "", amount: "", category: "" });
-  return (
-    <div style={{ display: "grid", gap: 20 }}>
-      <div style={card}>
-        <SectionTitle>Gastos fijos mensuales</SectionTitle>
-        <p style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: "var(--ink-soft)", marginTop: -4, marginBottom: 12 }}>
-          Para lo que es siempre el mismo monto (ej. alquiler).
-        </p>
-        {fixedExpenses.length === 0 && <Empty>Todavía no agregaste ningún gasto fijo.</Empty>}
-        {fixedExpenses.map((i) => {
-          const paid = status.expensesPaid.includes(i.id);
-          return (
-            <div key={i.id} className="fx-row" style={listRow}>
-              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", flex: 1 }}>
-                <input type="checkbox" checked={paid} onChange={() => onToggle(i.id)} style={checkbox} />
-                <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)", textDecoration: paid ? "line-through" : "none", opacity: paid ? 0.55 : 1 }}>
-                  {i.name}
-                </span>
-                {i.category && <span style={categoryBadge()}>{i.category}</span>}
-              </label>
-              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--ink)", marginRight: 12 }}>{fmtGs(i.amount)}</span>
-              <button className="fx-btn fx-del" onClick={() => onDelete(i.id)} style={delBtn}>✕</button>
-            </div>
-          );
-        })}
-        <div className="fx-form-row" style={formRow}>
-          <input placeholder="Nombre (ej. Alquiler)" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={{ ...input, flex: 2 }} />
-          <input placeholder="Monto" type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} style={{ ...input, flex: 1 }} />
-          <input list="fx-categorias" placeholder="Categoría (opcional)" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} style={{ ...input, flex: 1 }} />
-          <button
-            className="fx-btn"
-            type="button"
-            onClick={() => {
-              if (!form.name || !form.amount) return;
-              onAdd({ name: form.name, amount: Number(form.amount), category: form.category });
-              setForm({ name: "", amount: "", category: "" });
-            }}
-            style={addBtn}
-          >
-            Agregar
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Variables({ variableExpenses, variableIncome, mKey, monthLabel, onAddItem, onDeleteItem, onAddInstallments, onDeleteInstallment, onToggleInstallment }) {
-  const [kind, setKind] = useState("expense");
+function Variables({ kind, items, mKey, realNowKey, monthLabel, onAddItem, onDeleteItem, onAddInstallments, onDeleteInstallment, onToggleInstallment }) {
   const [form, setForm] = useState({ name: "", category: "" });
   const [expandedId, setExpandedId] = useState(null);
-  const items = kind === "expense" ? variableExpenses : variableIncome;
 
   return (
     <div style={{ display: "grid", gap: 20 }}>
-      <div style={{ display: "flex", gap: 8 }}>
-        <button type="button" onClick={() => setKind("expense")} style={toggleBtn(kind === "expense", "var(--red)")}>Gastos variables</button>
-        <button type="button" onClick={() => setKind("income")} style={toggleBtn(kind === "income", "var(--green)")}>Ingresos variables</button>
-      </div>
-
       <div style={card}>
-        <SectionTitle>{kind === "expense" ? "Nuevo gasto de monto variable" : "Nuevo ingreso de monto variable"}</SectionTitle>
+        <SectionTitle>{kind === "expense" ? "Nuevo gasto fijo" : "Nuevo ingreso fijo"}</SectionTitle>
         <p style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: "var(--ink-soft)", marginTop: -4, marginBottom: 12 }}>
           {kind === "expense"
-            ? "Para tarjeta, servicios, préstamos: cualquier gasto que cambie de monto cada mes."
-            : "Para tu sueldo u otro ingreso mensual que puede variar (comisiones, horas extra, etc.)."}
+            ? "Para lo que pagás todos los meses con un monto que ya conocés (alquiler, préstamos, cuotas)."
+            : "Para tu sueldo u otro ingreso fijo mensual."}
         </p>
         <div className="fx-form-row" style={formRow}>
           <input
-            placeholder={kind === "expense" ? "Nombre (ej. ANDE, Tigo)" : "Nombre (ej. Sueldo)"}
+            placeholder={kind === "expense" ? "Nombre (ej. Alquiler)" : "Nombre (ej. Sueldo)"}
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
             style={{ ...input, flex: 2 }}
@@ -557,10 +508,11 @@ function Variables({ variableExpenses, variableIncome, mKey, monthLabel, onAddIt
         </div>
       </div>
 
-      {items.length === 0 && <Empty>Todavía no cargaste {kind === "expense" ? "ningún gasto" : "ningún ingreso"} de monto variable.</Empty>}
+      {items.length === 0 && <Empty>Todavía no cargaste {kind === "expense" ? "ningún gasto fijo" : "ningún ingreso fijo"}.</Empty>}
 
       {items.map((it) => {
         const thisMonth = it.installments[mKey];
+        const thisMonthOverdue = kind === "expense" && thisMonth && !thisMonth.paid && mKey < realNowKey;
         const expanded = expandedId === it.id;
         const monthsSorted = Object.keys(it.installments).sort();
         return (
@@ -579,6 +531,7 @@ function Variables({ variableExpenses, variableIncome, mKey, monthLabel, onAddIt
                 <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)", textDecoration: thisMonth.paid ? "line-through" : "none", opacity: thisMonth.paid ? 0.55 : 1, flex: 1 }}>
                   {kind === "expense" ? "Cuota" : "Cobro"} de {monthLabel}
                 </span>
+                {thisMonthOverdue && <span style={overdueBadge}>VENCIDO</span>}
                 <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--ink)" }}>{fmtGs(thisMonth.amount)}</span>
               </label>
             ) : (
@@ -597,15 +550,22 @@ function Variables({ variableExpenses, variableIncome, mKey, monthLabel, onAddIt
               <div style={{ marginTop: 12 }}>
                 {monthsSorted.length > 0 && (
                   <div style={{ marginBottom: 12 }}>
-                    {monthsSorted.map((m) => (
-                      <div key={m} className="fx-row" style={listRow}>
-                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "var(--ink)" }}>{m}</span>
-                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: it.installments[m].paid ? "var(--green)" : "var(--ink-soft)" }}>
-                          {fmtGs(it.installments[m].amount)} {it.installments[m].paid ? "· ✓" : ""}
-                        </span>
-                        <button className="fx-btn fx-del" onClick={() => onDeleteInstallment(kind, it.id, m)} style={delBtn}>✕</button>
-                      </div>
-                    ))}
+                    {monthsSorted.map((m) => {
+                      const inst = it.installments[m];
+                      const overdue = kind === "expense" && !inst.paid && m < realNowKey;
+                      return (
+                        <div key={m} className="fx-row" style={listRow}>
+                          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "var(--ink)" }}>{m}</span>
+                          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            {overdue && <span style={overdueBadge}>VENCIDO</span>}
+                            <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: inst.paid ? "var(--green)" : "var(--ink-soft)" }}>
+                              {fmtGs(inst.amount)} {inst.paid ? "· ✓" : ""}
+                            </span>
+                          </span>
+                          <button className="fx-btn fx-del" onClick={() => onDeleteInstallment(kind, it.id, m)} style={delBtn}>✕</button>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
                 <VariableScheduleForm itemId={it.id} kind={kind} onAddInstallments={onAddInstallments} />
@@ -814,11 +774,11 @@ function FontImport() {
   );
 }
 
-function BackupBar({ fixedExpenses, variableExpenses, variableIncome, dailyEntries, monthlyStatus, dirty, onSaved, onRestore }) {
+function BackupBar({ variableExpenses, variableIncome, dailyEntries, dirty, onSaved, onRestore }) {
   const [msg, setMsg] = useState("");
 
   function exportBackup() {
-    const data = { fixedExpenses, variableExpenses, variableIncome, dailyEntries, monthlyStatus, exportedAt: new Date().toISOString() };
+    const data = { variableExpenses, variableIncome, dailyEntries, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -836,9 +796,6 @@ function BackupBar({ fixedExpenses, variableExpenses, variableIncome, dailyEntri
   function exportExcel() {
     const wb = XLSX.utils.book_new();
 
-    const wsFixed = XLSX.utils.json_to_sheet(fixedExpenses.map((i) => ({ Nombre: i.name, Categoría: i.category || "", Monto: i.amount })));
-    XLSX.utils.book_append_sheet(wb, wsFixed, "Gastos fijos");
-
     const varExpRows = [];
     variableExpenses.forEach((it) => {
       Object.keys(it.installments).sort().forEach((m) => {
@@ -846,7 +803,7 @@ function BackupBar({ fixedExpenses, variableExpenses, variableIncome, dailyEntri
         varExpRows.push({ Nombre: it.name, Categoría: it.category || "", Mes: m, Monto: inst.amount, Pagado: inst.paid ? "Sí" : "No" });
       });
     });
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(varExpRows), "Gastos variables");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(varExpRows), "Gastos fijos");
 
     const varIncRows = [];
     variableIncome.forEach((it) => {
@@ -855,7 +812,7 @@ function BackupBar({ fixedExpenses, variableExpenses, variableIncome, dailyEntri
         varIncRows.push({ Nombre: it.name, Mes: m, Monto: inst.amount, Cobrado: inst.paid ? "Sí" : "No" });
       });
     });
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(varIncRows), "Ingresos variables");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(varIncRows), "Ingresos fijos");
 
     const wsDaily = XLSX.utils.json_to_sheet(
       [...dailyEntries].sort((a, b) => (a.date < b.date ? -1 : 1)).map((e) => ({
@@ -869,17 +826,13 @@ function BackupBar({ fixedExpenses, variableExpenses, variableIncome, dailyEntri
     XLSX.utils.book_append_sheet(wb, wsDaily, "Diario");
 
     const months = new Set();
-    Object.keys(monthlyStatus).forEach((m) => months.add(m));
     dailyEntries.forEach((e) => months.add(e.date.slice(0, 7)));
     variableExpenses.forEach((it) => Object.keys(it.installments).forEach((m) => months.add(m)));
     variableIncome.forEach((it) => Object.keys(it.installments).forEach((m) => months.add(m)));
 
     const resumenRows = [...months].sort().map((m) => {
-      const st = monthlyStatus[m] || { expensesPaid: [] };
       const varExp = variableExpenses.map((it) => it.installments[m]).filter(Boolean);
       const varInc = variableIncome.map((it) => it.installments[m]).filter(Boolean);
-      const fixedTotal = fixedExpenses.reduce((s, i) => s + Number(i.amount), 0);
-      const fixedPaid = fixedExpenses.filter((i) => st.expensesPaid.includes(i.id)).reduce((s, i) => s + Number(i.amount), 0);
       const varExpTotal = varExp.reduce((s, i) => s + Number(i.amount), 0);
       const varExpPaid = varExp.filter((i) => i.paid).reduce((s, i) => s + Number(i.amount), 0);
       const varIncTotal = varInc.reduce((s, i) => s + Number(i.amount), 0);
@@ -891,10 +844,10 @@ function BackupBar({ fixedExpenses, variableExpenses, variableIncome, dailyEntri
         Mes: m,
         "Ingresos cobrados": varIncPaid + dailyInc,
         "Ingresos proyectados": varIncTotal + dailyInc,
-        "Gastos pagados": fixedPaid + varExpPaid + dailyExp,
-        "Gastos proyectados": fixedTotal + varExpTotal + dailyExp,
-        "Saldo real": varIncPaid + dailyInc - (fixedPaid + varExpPaid + dailyExp),
-        "Saldo proyectado": varIncTotal + dailyInc - (fixedTotal + varExpTotal + dailyExp),
+        "Gastos pagados": varExpPaid + dailyExp,
+        "Gastos proyectados": varExpTotal + dailyExp,
+        "Saldo real": varIncPaid + dailyInc - (varExpPaid + dailyExp),
+        "Saldo proyectado": varIncTotal + dailyInc - (varExpTotal + dailyExp),
       };
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumenRows), "Resumen por mes");
@@ -1002,6 +955,14 @@ const backupBtn = {
 const autoSavedBanner = {
   background: "#EAF4EE", color: "var(--green)", fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600,
   padding: "6px 24px", borderBottom: "1px solid #D7EADD",
+};
+const overdueBanner = {
+  background: "#FBEAEA", color: "var(--red)", fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 700,
+  padding: "8px 24px", borderBottom: "1px solid #F0D3D3",
+};
+const overdueBadge = {
+  fontFamily: "Inter, sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em",
+  padding: "2px 8px", borderRadius: 999, background: "var(--red)", color: "#fff",
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
