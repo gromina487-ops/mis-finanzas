@@ -249,6 +249,37 @@ function FinanzasTracker() {
   const balanceActual = ingresoCobradoTotal - gastoPagadoTotal;
   const balanceProyectado = ingresoTotal - gastoTotal;
 
+  function computeMonthBalance(m) {
+    const ve = variableExpenses.map((it) => it.installments[m]).filter(Boolean);
+    const vi = variableIncome.map((it) => it.installments[m]).filter(Boolean);
+    const vePaid = ve.filter((i) => i.paid).reduce((s, i) => s + Number(i.amount), 0);
+    const viPaid = vi.filter((i) => i.paid).reduce((s, i) => s + Number(i.amount), 0);
+    const dm = dailyEntries.filter((e) => e.date.slice(0, 7) === m);
+    const dExp = dm.filter((e) => e.type === "expense").reduce((s, e) => s + Number(e.amount), 0);
+    const dInc = dm.filter((e) => e.type === "income").reduce((s, e) => s + Number(e.amount), 0);
+    return viPaid + dInc - (vePaid + dExp);
+  }
+  function monthsBetween(startKey, endKey) {
+    if (startKey > endKey) return [endKey];
+    let [y, m] = startKey.split("-").map(Number);
+    const [ey, em] = endKey.split("-").map(Number);
+    const result = [];
+    while (y < ey || (y === ey && m <= em)) {
+      result.push(`${y}-${String(m).padStart(2, "0")}`);
+      m++;
+      if (m > 12) { m = 1; y++; }
+      if (result.length > 600) break;
+    }
+    return result;
+  }
+
+  const allMonthsWithData = new Set();
+  variableExpenses.forEach((it) => Object.keys(it.installments).forEach((m) => allMonthsWithData.add(m)));
+  variableIncome.forEach((it) => Object.keys(it.installments).forEach((m) => allMonthsWithData.add(m)));
+  dailyEntries.forEach((e) => allMonthsWithData.add(e.date.slice(0, 7)));
+  const earliestKey = allMonthsWithData.size ? [...allMonthsWithData].sort()[0] : mKey;
+  const saldoAcumulado = monthsBetween(earliestKey, mKey).reduce((sum, m) => sum + computeMonthBalance(m), 0);
+
   const realNowKey = monthKey(new Date());
   const overdueItems = [];
   variableExpenses.forEach((it) => {
@@ -351,22 +382,22 @@ function FinanzasTracker() {
 
         <div className="fx-balance-block" style={{ display: "flex", alignItems: "center", gap: 20, marginTop: 16, flexWrap: "wrap" }}>
           <div>
-            <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)" }}>Saldo real del mes</div>
-            <div className="fx-balance" style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 34, fontWeight: 700, color: balanceActual >= 0 ? "var(--green)" : "var(--red)" }}>
-              {fmtGs(balanceActual)}
+            <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)" }}>Saldo acumulado</div>
+            <div className="fx-balance" style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 34, fontWeight: 700, color: saldoAcumulado >= 0 ? "var(--green)" : "var(--red)" }}>
+              {fmtGs(saldoAcumulado)}
             </div>
             <div className="fx-proyectado" style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: "var(--ink-soft)", marginTop: 2 }}>
-              Proyectado: {fmtGs(balanceProyectado)}
+              Este mes: {balanceActual >= 0 ? "+" : ""}{fmtGs(balanceActual)} · Proyectado del mes: {fmtGs(balanceProyectado)}
             </div>
           </div>
-          <div className="fx-stamp" style={stamp(balanceActual >= 0)}>
-            {balanceActual >= 0 ? "AL DÍA" : "EN ROJO"}
+          <div className="fx-stamp" style={stamp(saldoAcumulado >= 0)}>
+            {saldoAcumulado >= 0 ? "AL DÍA" : "EN ROJO"}
           </div>
         </div>
 
         <div className="fx-stats" style={{ display: "flex", gap: 24, marginTop: 14, flexWrap: "wrap" }}>
-          <MiniStat label="Ingresos cobrados" value={`${fmtGs(ingresoCobradoTotal)} / ${fmtGs(ingresoTotal)}`} color="var(--green)" />
-          <MiniStat label="Gastos pagados" value={`${fmtGs(gastoPagadoTotal)} / ${fmtGs(gastoTotal)}`} color="var(--red)" />
+          <MiniStat label="Ingresos cobrados (mes)" value={`${fmtGs(ingresoCobradoTotal)} / ${fmtGs(ingresoTotal)}`} color="var(--green)" />
+          <MiniStat label="Gastos pagados (mes)" value={`${fmtGs(gastoPagadoTotal)} / ${fmtGs(gastoTotal)}`} color="var(--red)" />
         </div>
       </div>
 
