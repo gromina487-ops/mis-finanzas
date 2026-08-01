@@ -1,4 +1,4 @@
-const CACHE_NAME = "finanzas-cache-v2";
+const CACHE_NAME = "finanzas-cache-v4";
 const FILES_TO_CACHE = ["./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -17,8 +17,16 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
+// Red primero: siempre intenta traer la versión más nueva. Si no hay internet,
+// recién ahí usa la copia guardada, para que la app funcione offline.
 self.addEventListener("fetch", (event) => {
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+    fetch(event.request)
+      .then((response) => {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
