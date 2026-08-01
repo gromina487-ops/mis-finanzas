@@ -505,8 +505,44 @@ function Variables({ kind, items, mKey, realNowKey, monthLabel, onAddItem, onDel
   const [form, setForm] = useState({ name: "", category: "" });
   const [expandedId, setExpandedId] = useState(null);
 
+  const pendingRows = [];
+  if (kind === "expense") {
+    items.forEach((it) => {
+      Object.keys(it.installments).forEach((m) => {
+        const inst = it.installments[m];
+        if (!inst.paid && m <= realNowKey) {
+          pendingRows.push({ itemId: it.id, name: it.name, category: it.category, month: m, amount: inst.amount, overdue: m < realNowKey });
+        }
+      });
+    });
+    pendingRows.sort((a, b) => (a.month < b.month ? -1 : 1));
+  }
+
   return (
     <div style={{ display: "grid", gap: 20 }}>
+      {kind === "expense" && (
+        <div style={card}>
+          <SectionTitle>Pendientes de pagar (todas las cuotas)</SectionTitle>
+          {pendingRows.length === 0 ? (
+            <Empty>No tenés cuotas pendientes hasta este mes. ✓</Empty>
+          ) : (
+            pendingRows.map((r) => (
+              <div key={`${r.itemId}-${r.month}`} className="fx-row" style={listRow}>
+                <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", flex: 1 }}>
+                  <input type="checkbox" checked={false} onChange={() => onToggleInstallment(kind, r.itemId, r.month)} style={checkbox} />
+                  <span style={{ fontFamily: "Inter, sans-serif", fontSize: 14, color: "var(--ink)" }}>
+                    {r.name} ({r.month})
+                  </span>
+                  {r.category && <span style={categoryBadge()}>{r.category}</span>}
+                  {r.overdue && <span style={overdueBadge}>VENCIDO</span>}
+                </label>
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, color: "var(--red)" }}>{fmtGs(r.amount)}</span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
       <div style={card}>
         <SectionTitle>{kind === "expense" ? "Nuevo gasto fijo" : "Nuevo ingreso fijo"}</SectionTitle>
         <p style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: "var(--ink-soft)", marginTop: -4, marginBottom: 12 }}>
